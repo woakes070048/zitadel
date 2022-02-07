@@ -8,6 +8,8 @@ import (
 	"github.com/caos/logging"
 	"github.com/jinzhu/gorm"
 
+	"github.com/caos/zitadel/internal/domain"
+
 	caos_errs "github.com/caos/zitadel/internal/errors"
 )
 
@@ -110,17 +112,21 @@ func PrepareDeleteByKey(table string, key ColumnKey, id interface{}) func(db *go
 }
 
 type Key struct {
-	Key   ColumnKey
-	Value interface{}
+	Key    ColumnKey
+	Value  interface{}
+	Method domain.SearchMethod
 }
 
 func PrepareDeleteByKeys(table string, keys ...Key) func(db *gorm.DB) error {
-	return func(db *gorm.DB) error {
+	return func(db *gorm.DB) (err error) {
+		db = db.Table(table)
 		for _, key := range keys {
-			db = db.Table(table).
-				Where(fmt.Sprintf("%s = ?", key.Key.ToColumnName()), key.Value)
+			db, err = SetQuery(db, key.Key, key.Value, key.Method)
+			if err != nil {
+				return caos_errs.ThrowInvalidArgument(err, "VIEW-DVef2", "query is invalid")
+			}
 		}
-		err := db.
+		err = db.
 			Delete(nil).
 			Error
 		if err != nil {

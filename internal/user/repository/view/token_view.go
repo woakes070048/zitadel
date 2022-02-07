@@ -62,6 +62,14 @@ func DeleteSessionTokens(db *gorm.DB, table, agentID, userID string) error {
 	return delete(db)
 }
 
+func DeleteOtherSessionTokens(db *gorm.DB, table, agentID, userID string) error {
+	delete := repository.PrepareDeleteByKeys(table,
+		repository.Key{Key: usr_model.TokenSearchKey(model.TokenSearchKeyUserAgentID), Value: agentID, Method: domain.SearchMethodNotEquals},
+		repository.Key{Key: usr_model.TokenSearchKey(model.TokenSearchKeyUserID), Value: userID},
+	)
+	return delete(db)
+}
+
 func DeleteUserTokens(db *gorm.DB, table, userID string) error {
 	delete := repository.PrepareDeleteByKey(table, usr_model.TokenSearchKey(model.TokenSearchKeyUserID), userID)
 	return delete(db)

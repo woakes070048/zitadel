@@ -92,7 +92,10 @@ func (t *Token) Reduce(event *es_models.Event) (err error) {
 	case user_es_model.UserProfileChanged,
 		user_es_model.HumanProfileChanged:
 		user := new(view_model.UserView)
-		user.AppendEvent(event)
+		err := user.AppendEvent(event)
+		if err != nil {
+			return err
+		}
 		tokens, err := t.view.TokensByUserID(event.AggregateID)
 		if err != nil {
 			return err
@@ -101,6 +104,16 @@ func (t *Token) Reduce(event *es_models.Event) (err error) {
 			token.PreferredLanguage = user.PreferredLanguage
 		}
 		return t.view.PutTokens(tokens, event)
+	case user_es_model.UserPasswordChanged,
+		user_es_model.HumanPasswordChanged,
+		user_es_model.HumanPasswordlessTokenRemoved,
+		user_es_model.HumanExternalIDPRemoved,
+		user_es_model.HumanExternalIDPCascadeRemoved:
+		id, err := agentIDFromSession(event)
+		if err != nil {
+			return err
+		}
+		return t.view.DeleteOtherSessionTokens(id, event.AggregateID, event)
 	case user_es_model.SignedOut,
 		user_es_model.HumanSignedOut:
 		id, err := agentIDFromSession(event)
@@ -158,7 +171,11 @@ func agentIDFromSession(event *es_models.Event) (string, error) {
 		logging.Log("EVEN-s3bq9").WithError(err).Error("could not unmarshal event data")
 		return "", caos_errs.ThrowInternal(nil, "MODEL-sd325", "could not unmarshal data")
 	}
-	return session["userAgentID"].(string), nil
+	userAgentID, ok := session["userAgentID"]
+	if !ok {
+		return "", nil
+	}
+	return userAgentID.(string), nil
 }
 
 func applicationFromSession(event *es_models.Event) (*project_es_model.Application, error) {

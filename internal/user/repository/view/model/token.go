@@ -70,6 +70,19 @@ func (t *TokenView) AppendEventIfMyToken(event *es_models.Event) (err error) {
 		return t.appendTokenRemoved(event)
 	case es_models.EventType(user_repo.HumanRefreshTokenRemovedType):
 		return t.appendRefreshTokenRemoved(event)
+	case usr_es_model.UserPasswordChanged,
+		usr_es_model.HumanPasswordChanged,
+		usr_es_model.HumanPasswordlessTokenRemoved,
+		usr_es_model.HumanExternalIDPRemoved,
+		usr_es_model.HumanExternalIDPCascadeRemoved:
+		id, err := agentIDFromSession(event)
+		if err != nil {
+			return err
+		}
+		if t.UserAgentID != id {
+			t.Deactivated = true
+		}
+		return nil
 	case usr_es_model.SignedOut,
 		usr_es_model.HumanSignedOut:
 		id, err := agentIDFromSession(event)
@@ -137,7 +150,11 @@ func agentIDFromSession(event *es_models.Event) (string, error) {
 		logging.Log("EVEN-Ghgt3").WithError(err).Error("could not unmarshal event data")
 		return "", caos_errs.ThrowInternal(nil, "MODEL-GBf32", "could not unmarshal data")
 	}
-	return session["userAgentID"].(string), nil
+	userAgentID, ok := session["userAgentID"]
+	if !ok {
+		return "", nil
+	}
+	return userAgentID.(string), nil
 }
 
 func (t *TokenView) appendTokenRemoved(event *es_models.Event) error {

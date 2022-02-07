@@ -52,6 +52,14 @@ func (v *View) DeleteSessionTokens(agentID, userID string, event *models.Event) 
 	return v.ProcessedTokenSequence(event)
 }
 
+func (v *View) DeleteOtherSessionTokens(agentID, userID string, event *models.Event) error {
+	err := usr_view.DeleteOtherSessionTokens(v.Db, tokenTable, agentID, userID)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return v.ProcessedTokenSequence(event)
+}
+
 func (v *View) DeleteUserTokens(userID string, event *models.Event) error {
 	err := usr_view.DeleteUserTokens(v.Db, tokenTable, userID)
 	if err != nil && !errors.IsNotFound(err) {
