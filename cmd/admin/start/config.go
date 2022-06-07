@@ -64,6 +64,8 @@ func MustNewConfig(v *viper.Viper) *Config {
 			mapstructure.StringToSliceHookFunc(","),
 		)),
 	)
+	logging.OnError(err).Fatal("unable to unmarshal config")
+
 	err = config.Log.SetLogger()
 	logging.OnError(err).Fatal("unable to set logger")
 
