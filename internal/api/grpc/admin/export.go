@@ -556,9 +556,14 @@ func (s *Server) getLoginPolicy(ctx context.Context, orgID string) (
 		idpLinks := make([]*management_pb.AddIDPToLoginPolicyRequest, len(queriedIdpLinks.Links))
 		if queriedIdpLinks != nil {
 			for i, idpLink := range queriedIdpLinks.Links {
+				idp, err := s.query.IDPByIDAndResourceOwner(ctx, false, idpLink.IDPID, orgID)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+
 				idpLinks[i] = &management_pb.AddIDPToLoginPolicyRequest{
 					IdpId:     idpLink.IDPID,
-					OwnerType: idp_pb.IDPOwnerType(idpLink.IDPType),
+					OwnerType: idp_pb.IDPOwnerType(idp.OwnerType),
 				}
 			}
 		}
