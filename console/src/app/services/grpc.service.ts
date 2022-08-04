@@ -12,6 +12,7 @@ import { AuthenticationService } from './authentication.service';
 import { AuthInterceptor } from './interceptors/auth.interceptor';
 import { I18nInterceptor } from './interceptors/i18n.interceptor';
 import { OrgInterceptor } from './interceptors/org.interceptor';
+import { RateInterceptor } from './interceptors/rate.interceptor';
 import { StorageService } from './storage.service';
 
 @Injectable({

@@ -1,5 +1,5 @@
 import { CommonModule, registerLocaleData } from '@angular/common';
-import { HttpClientModule } from '@angular/common/http';
+import { HttpClientModule, HTTP_INTERCEPTORS } from '@angular/common/http';
 import localeDe from '@angular/common/locales/de';
 import { APP_INITIALIZER, NgModule } from '@angular/core';
 import { MatNativeDateModule } from '@angular/material/core';
@@ -36,6 +36,8 @@ import { BreadcrumbService } from './services/breadcrumb.service';
 import { GrpcAuthService } from './services/grpc-auth.service';
 import { GrpcService } from './services/grpc.service';
 import { AuthInterceptor } from './services/interceptors/auth.interceptor';
+import { RateInterceptor } from './services/interceptors/rate.interceptor';
+
 import { GRPC_INTERCEPTORS } from './services/interceptors/grpc-interceptor';
 import { I18nInterceptor } from './services/interceptors/i18n.interceptor';
 import { OrgInterceptor } from './services/interceptors/org.interceptor';
@@ -46,8 +48,8 @@ import { OverlayService } from './services/overlay/overlay.service';
 import { RefreshService } from './services/refresh.service';
 import { SeoService } from './services/seo.service';
 import {
-    StatehandlerProcessorService,
-    StatehandlerProcessorServiceImpl,
+  StatehandlerProcessorService,
+  StatehandlerProcessorServiceImpl,
 } from './services/statehandler/statehandler-processor.service';
 import { StatehandlerService, StatehandlerServiceImpl } from './services/statehandler/statehandler.service';
 import { StorageService } from './services/storage.service';
@@ -149,6 +151,11 @@ const authConfig: AuthConfig = {
       provide: GRPC_INTERCEPTORS,
       multi: true,
       useClass: AuthInterceptor,
+    },
+    {
+      provide: HTTP_INTERCEPTORS,
+      multi: true,
+      useClass: RateInterceptor,
     },
     {
       provide: GRPC_INTERCEPTORS,
