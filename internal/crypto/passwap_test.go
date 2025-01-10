@@ -49,7 +49,7 @@ func TestPasswordHasher_EncodingSupported(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &PasswordHasher{
+			h := &Hasher{
 				Prefixes: []string{bcrypt.Prefix, argon2.Prefix},
 			}
 			got := h.EncodingSupported(tt.encodedHash)
@@ -340,11 +340,11 @@ func TestPasswordHashConfig_PasswordHasher(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &PasswordHashConfig{
+			c := &HashConfig{
 				Verifiers: tt.fields.Verifiers,
 				Hasher:    tt.fields.Hasher,
 			}
-			got, err := c.PasswordHasher()
+			got, err := c.NewHasher()
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
@@ -379,7 +379,10 @@ func TestHasherConfig_decodeParams(t *testing.T) {
 				"b": 2,
 				"c": 3,
 			},
-			wantErr: true,
+			want: dst{
+				A: 1,
+				B: 2,
+			},
 		},
 		{
 			name: "unset",
@@ -394,7 +397,11 @@ func TestHasherConfig_decodeParams(t *testing.T) {
 				"a": 1,
 				"b": "2",
 			},
-			wantErr: true,
+			want: dst{
+				A: 1,
+				B: 2,
+			},
+			wantErr: false, // https://github.com/zitadel/zitadel/issues/6913
 		},
 		{
 			name: "ok",

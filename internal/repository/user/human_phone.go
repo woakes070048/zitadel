@@ -2,14 +2,14 @@ package user
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
+	"github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/notification/senders"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -28,11 +28,11 @@ type HumanPhoneChangedEvent struct {
 	PhoneNumber domain.PhoneNumber `json:"phone,omitempty"`
 }
 
-func (e *HumanPhoneChangedEvent) Data() interface{} {
+func (e *HumanPhoneChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPhoneChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -47,13 +47,13 @@ func NewHumanPhoneChangedEvent(ctx context.Context, aggregate *eventstore.Aggreg
 	}
 }
 
-func HumanPhoneChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPhoneChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	phoneChangedEvent := &HumanPhoneChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, phoneChangedEvent)
+	err := event.Unmarshal(phoneChangedEvent)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-5M0pd", "unable to unmarshal human phone changed")
+		return nil, zerrors.ThrowInternal(err, "USER-5M0pd", "unable to unmarshal human phone changed")
 	}
 
 	return phoneChangedEvent, nil
@@ -63,11 +63,11 @@ type HumanPhoneRemovedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanPhoneRemovedEvent) Data() interface{} {
+func (e *HumanPhoneRemovedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanPhoneRemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneRemovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -81,7 +81,7 @@ func NewHumanPhoneRemovedEvent(ctx context.Context, aggregate *eventstore.Aggreg
 	}
 }
 
-func HumanPhoneRemovedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPhoneRemovedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &HumanPhoneRemovedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
@@ -93,11 +93,11 @@ type HumanPhoneVerifiedEvent struct {
 	IsPhoneVerified bool `json:"-"`
 }
 
-func (e *HumanPhoneVerifiedEvent) Data() interface{} {
+func (e *HumanPhoneVerifiedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanPhoneVerifiedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneVerifiedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -111,7 +111,7 @@ func NewHumanPhoneVerifiedEvent(ctx context.Context, aggregate *eventstore.Aggre
 	}
 }
 
-func HumanPhoneVerifiedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPhoneVerifiedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &HumanPhoneVerifiedEvent{
 		BaseEvent:       *eventstore.BaseEventFromRepo(event),
 		IsPhoneVerified: true,
@@ -122,11 +122,11 @@ type HumanPhoneVerificationFailedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanPhoneVerificationFailedEvent) Data() interface{} {
+func (e *HumanPhoneVerificationFailedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanPhoneVerificationFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneVerificationFailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -140,7 +140,7 @@ func NewHumanPhoneVerificationFailedEvent(ctx context.Context, aggregate *events
 	}
 }
 
-func HumanPhoneVerificationFailedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPhoneVerificationFailedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &HumanPhoneVerificationFailedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
@@ -149,17 +149,23 @@ func HumanPhoneVerificationFailedEventMapper(event *repository.Event) (eventstor
 type HumanPhoneCodeAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Code         *crypto.CryptoValue `json:"code,omitempty"`
-	Expiry       time.Duration       `json:"expiry,omitempty"`
-	CodeReturned bool                `json:"code_returned,omitempty"`
+	Code              *crypto.CryptoValue `json:"code,omitempty"`
+	Expiry            time.Duration       `json:"expiry,omitempty"`
+	CodeReturned      bool                `json:"code_returned,omitempty"`
+	GeneratorID       string              `json:"generatorId,omitempty"`
+	TriggeredAtOrigin string              `json:"triggerOrigin,omitempty"`
 }
 
-func (e *HumanPhoneCodeAddedEvent) Data() interface{} {
+func (e *HumanPhoneCodeAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPhoneCodeAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneCodeAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *HumanPhoneCodeAddedEvent) TriggerOrigin() string {
+	return e.TriggeredAtOrigin
 }
 
 func NewHumanPhoneCodeAddedEvent(
@@ -167,15 +173,18 @@ func NewHumanPhoneCodeAddedEvent(
 	aggregate *eventstore.Aggregate,
 	code *crypto.CryptoValue,
 	expiry time.Duration,
+	generatorID string,
 ) *HumanPhoneCodeAddedEvent {
-	return NewHumanPhoneCodeAddedEventV2(ctx, aggregate, code, expiry, false)
+	return NewHumanPhoneCodeAddedEventV2(ctx, aggregate, code, expiry, false, generatorID)
 }
+
 func NewHumanPhoneCodeAddedEventV2(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	code *crypto.CryptoValue,
 	expiry time.Duration,
 	codeReturned bool,
+	generatorID string,
 ) *HumanPhoneCodeAddedEvent {
 	return &HumanPhoneCodeAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -183,48 +192,51 @@ func NewHumanPhoneCodeAddedEventV2(
 			aggregate,
 			HumanPhoneCodeAddedType,
 		),
-		Code:         code,
-		Expiry:       expiry,
-		CodeReturned: codeReturned,
+		Code:              code,
+		Expiry:            expiry,
+		CodeReturned:      codeReturned,
+		GeneratorID:       generatorID,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
 	}
 }
 
-func HumanPhoneCodeAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPhoneCodeAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	codeAdded := &HumanPhoneCodeAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, codeAdded)
+	err := event.Unmarshal(codeAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-6Ms9d", "unable to unmarshal human phone code added")
+		return nil, zerrors.ThrowInternal(err, "USER-6Ms9d", "unable to unmarshal human phone code added")
 	}
 
 	return codeAdded, nil
 }
 
 type HumanPhoneCodeSentEvent struct {
-	eventstore.BaseEvent `json:"-"`
+	*eventstore.BaseEvent `json:"-"`
+
+	GeneratorInfo *senders.CodeGeneratorInfo `json:"generatorInfo,omitempty"`
 }
 
-func (e *HumanPhoneCodeSentEvent) Data() interface{} {
+func (e *HumanPhoneCodeSentEvent) SetBaseEvent(event *eventstore.BaseEvent) {
+	e.BaseEvent = event
+}
+
+func (e *HumanPhoneCodeSentEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPhoneCodeSentEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPhoneCodeSentEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
-func NewHumanPhoneCodeSentEvent(ctx context.Context, aggregate *eventstore.Aggregate) *HumanPhoneCodeSentEvent {
+func NewHumanPhoneCodeSentEvent(ctx context.Context, aggregate *eventstore.Aggregate, generatorInfo *senders.CodeGeneratorInfo) *HumanPhoneCodeSentEvent {
 	return &HumanPhoneCodeSentEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
+		BaseEvent: eventstore.NewBaseEventForPush(
 			ctx,
 			aggregate,
 			HumanPhoneCodeSentType,
 		),
+		GeneratorInfo: generatorInfo,
 	}
-}
-
-func HumanPhoneCodeSentEventMapper(event *repository.Event) (eventstore.Event, error) {
-	return &HumanPhoneCodeSentEvent{
-		BaseEvent: *eventstore.BaseEventFromRepo(event),
-	}, nil
 }

@@ -3,7 +3,7 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -11,8 +11,8 @@ import (
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/database"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -36,12 +36,16 @@ var (
 		name:  projection.SecurityPolicyColumnSequence,
 		table: securityPolicyTable,
 	}
-	SecurityPolicyColumnEnabled = Column{
-		name:  projection.SecurityPolicyColumnEnabled,
+	SecurityPolicyColumnEnableIframeEmbedding = Column{
+		name:  projection.SecurityPolicyColumnEnableIframeEmbedding,
 		table: securityPolicyTable,
 	}
 	SecurityPolicyColumnAllowedOrigins = Column{
 		name:  projection.SecurityPolicyColumnAllowedOrigins,
+		table: securityPolicyTable,
+	}
+	SecurityPolicyColumnEnableImpersonation = Column{
+		name:  projection.SecurityPolicyColumnEnableImpersonation,
 		table: securityPolicyTable,
 	}
 )
@@ -53,8 +57,9 @@ type SecurityPolicy struct {
 	ResourceOwner string
 	Sequence      uint64
 
-	Enabled        bool
-	AllowedOrigins database.StringArray
+	EnableIframeEmbedding bool
+	AllowedOrigins        database.TextArray[string]
+	EnableImpersonation   bool
 }
 
 func (q *Queries) SecurityPolicy(ctx context.Context) (policy *SecurityPolicy, err error) {
@@ -63,7 +68,7 @@ func (q *Queries) SecurityPolicy(ctx context.Context) (policy *SecurityPolicy, e
 		SecurityPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Sf6d1", "Errors.Query.SQLStatment")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Sf6d1", "Errors.Query.SQLStatment")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -80,8 +85,9 @@ func prepareSecurityPolicyQuery(ctx context.Context, db prepareDatabase) (sq.Sel
 			SecurityPolicyColumnChangeDate.identifier(),
 			SecurityPolicyColumnInstanceID.identifier(),
 			SecurityPolicyColumnSequence.identifier(),
-			SecurityPolicyColumnEnabled.identifier(),
-			SecurityPolicyColumnAllowedOrigins.identifier()).
+			SecurityPolicyColumnEnableIframeEmbedding.identifier(),
+			SecurityPolicyColumnAllowedOrigins.identifier(),
+			SecurityPolicyColumnEnableImpersonation.identifier()).
 			From(securityPolicyTable.identifier() + db.Timetravel(call.Took(ctx))).
 			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*SecurityPolicy, error) {
@@ -92,11 +98,12 @@ func prepareSecurityPolicyQuery(ctx context.Context, db prepareDatabase) (sq.Sel
 				&securityPolicy.ChangeDate,
 				&securityPolicy.ResourceOwner,
 				&securityPolicy.Sequence,
-				&securityPolicy.Enabled,
+				&securityPolicy.EnableIframeEmbedding,
 				&securityPolicy.AllowedOrigins,
+				&securityPolicy.EnableImpersonation,
 			)
-			if err != nil && !errs.Is(err, sql.ErrNoRows) { // ignore not found errors
-				return nil, errors.ThrowInternal(err, "QUERY-Dfrt2", "Errors.Internal")
+			if err != nil && !errors.Is(err, sql.ErrNoRows) { // ignore not found errors
+				return nil, zerrors.ThrowInternal(err, "QUERY-Dfrt2", "Errors.Internal")
 			}
 			return securityPolicy, nil
 		}

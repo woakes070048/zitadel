@@ -36,7 +36,7 @@ export const APPEARANCE_GROUP: SettingLinks = {
 };
 
 export const PRIVACY_POLICY: SettingLinks = {
-  i18nTitle: 'SETTINGS.LIST.PRIVACYPOLICY',
+  i18nTitle: 'DESCRIPTIONS.SETTINGS.PRIVACY_POLICY.TITLE',
   i18nDesc: 'POLICY.PRIVACY_POLICY.DESCRIPTION',
   iamRouterLink: ['/settings'],
   orgRouterLink: ['/org-settings'],
@@ -51,7 +51,7 @@ export const NOTIFICATION_GROUP: SettingLinks = {
   i18nTitle: 'SETTINGS.GROUPS.NOTIFICATIONS',
   i18nDesc: 'SETTINGS.LIST.NOTIFICATIONS_DESC',
   iamRouterLink: ['/settings'],
-  queryParams: { id: 'notifications' },
+  queryParams: { id: 'smtpprovider' },
   iamWithRole: ['iam.policy.read'],
   icon: 'las la-bell',
   color: 'red',

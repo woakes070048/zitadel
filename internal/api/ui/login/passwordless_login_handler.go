@@ -36,19 +36,20 @@ func (l *Login) renderPasswordlessVerification(w http.ResponseWriter, r *http.Re
 	if passwordSet && authReq.LoginPolicy != nil {
 		passwordSet = authReq.LoginPolicy.AllowUsernamePassword
 	}
+	translator := l.getTranslator(r.Context(), authReq)
 	data := &passwordlessData{
 		webAuthNData{
-			userData:               l.getUserData(r, authReq, "Passwordless.Title", "Passwordless.Description", errID, errMessage),
+			userData:               l.getUserData(r, authReq, translator, "Passwordless.Title", "Passwordless.Description", errID, errMessage),
 			CredentialCreationData: credentialData,
 		},
 		passwordSet,
 	}
-	l.renderer.RenderTemplate(w, r, l.getTranslator(r.Context(), authReq), l.renderer.Templates[tmplPasswordlessVerification], data, nil)
+	l.renderer.RenderTemplate(w, r, translator, l.renderer.Templates[tmplPasswordlessVerification], data, nil)
 }
 
 func (l *Login) handlePasswordlessVerification(w http.ResponseWriter, r *http.Request) {
 	formData := new(passwordlessFormData)
-	authReq, err := l.getAuthRequestAndParseData(r, formData)
+	authReq, err := l.ensureAuthRequestAndParseData(r, formData)
 	if err != nil {
 		l.renderError(w, r, authReq, err)
 		return

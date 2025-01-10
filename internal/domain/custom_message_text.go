@@ -4,6 +4,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -16,6 +17,7 @@ const (
 	DomainClaimedMessageType            = "DomainClaimed"
 	PasswordlessRegistrationMessageType = "PasswordlessRegistration"
 	PasswordChangeMessageType           = "PasswordChange"
+	InviteUserMessageType               = "InviteUser"
 	MessageTitle                        = "Title"
 	MessagePreHeader                    = "PreHeader"
 	MessageSubject                      = "Subject"
@@ -24,16 +26,6 @@ const (
 	MessageButtonText                   = "ButtonText"
 	MessageFooterText                   = "Footer"
 )
-
-type MessageTexts struct {
-	InitCode                 CustomMessageText
-	PasswordReset            CustomMessageText
-	VerifyEmail              CustomMessageText
-	VerifyPhone              CustomMessageText
-	DomainClaimed            CustomMessageText
-	PasswordlessRegistration CustomMessageText
-	PasswordChange           CustomMessageText
-}
 
 type CustomMessageText struct {
 	models.ObjectRoot
@@ -51,8 +43,14 @@ type CustomMessageText struct {
 	FooterText      string
 }
 
-func (m *CustomMessageText) IsValid() bool {
-	return m.MessageTextType != "" && m.Language != language.Und
+func (m *CustomMessageText) IsValid(supportedLanguages []language.Tag) error {
+	if m.MessageTextType == "" {
+		return zerrors.ThrowInvalidArgument(nil, "INSTANCE-kd9fs", "Errors.CustomMessageText.Invalid")
+	}
+	if err := LanguageIsDefined(m.Language); err != nil {
+		return err
+	}
+	return LanguagesAreSupported(supportedLanguages, m.Language)
 }
 
 func IsMessageTextType(textType string) bool {
@@ -64,5 +62,6 @@ func IsMessageTextType(textType string) bool {
 		textType == VerifyEmailOTPMessageType ||
 		textType == DomainClaimedMessageType ||
 		textType == PasswordlessRegistrationMessageType ||
-		textType == PasswordChangeMessageType
+		textType == PasswordChangeMessageType ||
+		textType == InviteUserMessageType
 }

@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -26,7 +26,7 @@ type GeneratorConfig struct {
 type Generator interface {
 	Length() uint
 	Expiry() time.Duration
-	Alg() Crypto
+	Alg() EncryptionAlgorithm
 	Runes() []rune
 }
 
@@ -53,7 +53,7 @@ type encryptionGenerator struct {
 	alg EncryptionAlgorithm
 }
 
-func (g *encryptionGenerator) Alg() Crypto {
+func (g *encryptionGenerator) Alg() EncryptionAlgorithm {
 	return g.alg
 }
 
@@ -64,20 +64,28 @@ func NewEncryptionGenerator(config GeneratorConfig, algorithm EncryptionAlgorith
 	}
 }
 
-type hashGenerator struct {
+type HashGenerator struct {
 	generator
-	alg HashAlgorithm
+	hasher *Hasher
 }
 
-func (g *hashGenerator) Alg() Crypto {
-	return g.alg
-}
-
-func NewHashGenerator(config GeneratorConfig, algorithm HashAlgorithm) Generator {
-	return &hashGenerator{
+func NewHashGenerator(config GeneratorConfig, hasher *Hasher) *HashGenerator {
+	return &HashGenerator{
 		newGenerator(config),
-		algorithm,
+		hasher,
 	}
+}
+
+func (g *HashGenerator) NewCode() (encoded, plain string, err error) {
+	plain, err = GenerateRandomString(g.Length(), g.Runes())
+	if err != nil {
+		return "", "", err
+	}
+	encoded, err = g.hasher.Hash(plain)
+	if err != nil {
+		return "", "", err
+	}
+	return encoded, plain, nil
 }
 
 func newGenerator(config GeneratorConfig) generator {
@@ -120,21 +128,11 @@ func IsCodeExpired(creationDate time.Time, expiry time.Duration) bool {
 	return creationDate.Add(expiry).Before(time.Now().UTC())
 }
 
-func VerifyCode(creationDate time.Time, expiry time.Duration, cryptoCode *CryptoValue, verificationCode string, g Generator) error {
-	return VerifyCodeWithAlgorithm(creationDate, expiry, cryptoCode, verificationCode, g.Alg())
-}
-
-func VerifyCodeWithAlgorithm(creationDate time.Time, expiry time.Duration, cryptoCode *CryptoValue, verificationCode string, algorithm Crypto) error {
+func VerifyCode(creationDate time.Time, expiry time.Duration, cryptoCode *CryptoValue, verificationCode string, algorithm EncryptionAlgorithm) error {
 	if IsCodeExpired(creationDate, expiry) {
-		return errors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired")
+		return zerrors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired")
 	}
-	switch alg := algorithm.(type) {
-	case EncryptionAlgorithm:
-		return verifyEncryptedCode(cryptoCode, verificationCode, alg)
-	case HashAlgorithm:
-		return verifyHashedCode(cryptoCode, verificationCode, alg)
-	}
-	return errors.ThrowInvalidArgument(nil, "CODE-fW2gNa", "Errors.User.Code.GeneratorAlgNotSupported")
+	return verifyEncryptedCode(cryptoCode, verificationCode, algorithm)
 }
 
 func GenerateRandomString(length uint, chars []rune) (string, error) {
@@ -161,7 +159,7 @@ func GenerateRandomString(length uint, chars []rune) (string, error) {
 
 func verifyEncryptedCode(cryptoCode *CryptoValue, verificationCode string, alg EncryptionAlgorithm) error {
 	if cryptoCode == nil {
-		return errors.ThrowInvalidArgument(nil, "CRYPT-aqrFV", "Errors.User.Code.CryptoCodeNil")
+		return zerrors.ThrowInvalidArgument(nil, "CRYPT-aqrFV", "Errors.User.Code.CryptoCodeNil")
 	}
 	code, err := DecryptString(cryptoCode, alg)
 	if err != nil {
@@ -169,14 +167,7 @@ func verifyEncryptedCode(cryptoCode *CryptoValue, verificationCode string, alg E
 	}
 
 	if code != verificationCode {
-		return errors.ThrowInvalidArgument(nil, "CODE-woT0xc", "Errors.User.Code.Invalid")
+		return zerrors.ThrowInvalidArgument(nil, "CODE-woT0xc", "Errors.User.Code.Invalid")
 	}
 	return nil
-}
-
-func verifyHashedCode(cryptoCode *CryptoValue, verificationCode string, alg HashAlgorithm) error {
-	if cryptoCode == nil {
-		return errors.ThrowInvalidArgument(nil, "CRYPT-2q3r", "cryptoCode must not be nil")
-	}
-	return CompareHash(cryptoCode, []byte(verificationCode), alg)
 }

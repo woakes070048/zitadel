@@ -3,11 +3,13 @@ package domain
 const (
 	OrgDomainPrimaryScope = "urn:zitadel:iam:org:domain:primary:"
 	OrgIDScope            = "urn:zitadel:iam:org:id:"
+	OrgRoleIDScope        = "urn:zitadel:iam:org:roles:id:"
 	OrgDomainPrimaryClaim = "urn:zitadel:iam:org:domain:primary"
 	OrgIDClaim            = "urn:zitadel:iam:org:id"
 	ProjectIDScope        = "urn:zitadel:iam:org:project:id:"
 	ProjectIDScopeZITADEL = "zitadel"
 	AudSuffix             = ":aud"
+	ProjectScopeZITADEL   = ProjectIDScope + ProjectIDScopeZITADEL + AudSuffix
 	SelectIDPScope        = "urn:zitadel:iam:org:idp:id:"
 )
 
@@ -28,6 +30,7 @@ const (
 type AuthRequestOIDC struct {
 	Scopes        []string
 	ResponseType  OIDCResponseType
+	ResponseMode  OIDCResponseMode
 	Nonce         string
 	CodeChallenge *OIDCCodeChallenge
 }
@@ -59,10 +62,11 @@ func (a *AuthRequestSAML) IsValid() bool {
 }
 
 type AuthRequestDevice struct {
-	ID         string
+	ClientID   string
 	DeviceCode string
 	UserCode   string
 	Scopes     []string
+	Audience   []string
 }
 
 func (*AuthRequestDevice) Type() AuthRequestType {
@@ -70,5 +74,5 @@ func (*AuthRequestDevice) Type() AuthRequestType {
 }
 
 func (a *AuthRequestDevice) IsValid() bool {
-	return a.DeviceCode != "" && a.UserCode != "" && len(a.Scopes) > 0
+	return a.DeviceCode != "" && a.UserCode != ""
 }

@@ -1,7 +1,9 @@
 package crypto
 
 import (
+	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mitchellh/mapstructure"
@@ -9,21 +11,29 @@ import (
 	"github.com/zitadel/passwap/argon2"
 	"github.com/zitadel/passwap/bcrypt"
 	"github.com/zitadel/passwap/md5"
+	"github.com/zitadel/passwap/md5plain"
 	"github.com/zitadel/passwap/pbkdf2"
 	"github.com/zitadel/passwap/scrypt"
 	"github.com/zitadel/passwap/verifier"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
-type PasswordHasher struct {
+type Hasher struct {
 	*passwap.Swapper
-	Prefixes []string
+	Prefixes     []string
+	HexSupported bool
 }
 
-func (h *PasswordHasher) EncodingSupported(encodedHash string) bool {
+func (h *Hasher) EncodingSupported(encodedHash string) bool {
 	for _, prefix := range h.Prefixes {
 		if strings.HasPrefix(encodedHash, prefix) {
+			return true
+		}
+	}
+	if h.HexSupported {
+		_, err := hex.DecodeString(encodedHash)
+		if err == nil {
 			return true
 		}
 	}
@@ -38,6 +48,7 @@ const (
 	HashNameArgon2id HashName = "argon2id" // hash only
 	HashNameBcrypt   HashName = "bcrypt"   // hash and verify
 	HashNameMd5      HashName = "md5"      // verify only, as hashing with md5 is insecure and deprecated
+	HashNameMd5Plain HashName = "md5plain" // verify only, as hashing with md5 is insecure and deprecated
 	HashNameScrypt   HashName = "scrypt"   // hash and verify
 	HashNamePBKDF2   HashName = "pbkdf2"   // hash and verify
 )
@@ -54,23 +65,24 @@ const (
 	HashModeSHA512 HashMode = "sha512"
 )
 
-type PasswordHashConfig struct {
+type HashConfig struct {
 	Verifiers []HashName
 	Hasher    HasherConfig
 }
 
-func (c *PasswordHashConfig) PasswordHasher() (*PasswordHasher, error) {
+func (c *HashConfig) NewHasher() (*Hasher, error) {
 	verifiers, vPrefixes, err := c.buildVerifiers()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "CRYPT-sahW9", "password hash config invalid")
+		return nil, zerrors.ThrowInvalidArgument(err, "CRYPT-sahW9", "password hash config invalid")
 	}
 	hasher, hPrefixes, err := c.Hasher.buildHasher()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "CRYPT-Que4r", "password hash config invalid")
+		return nil, zerrors.ThrowInvalidArgument(err, "CRYPT-Que4r", "password hash config invalid")
 	}
-	return &PasswordHasher{
-		Swapper:  passwap.NewSwapper(hasher, verifiers...),
-		Prefixes: append(hPrefixes, vPrefixes...),
+	return &Hasher{
+		Swapper:      passwap.NewSwapper(hasher, verifiers...),
+		Prefixes:     append(hPrefixes, vPrefixes...),
+		HexSupported: slices.Contains(c.Verifiers, HashNameMd5Plain),
 	}, nil
 }
 
@@ -95,6 +107,10 @@ var knowVerifiers = map[HashName]prefixVerifier{
 		prefixes: []string{md5.Prefix},
 		verifier: md5.Verifier,
 	},
+	HashNameMd5Plain: {
+		prefixes: nil, // hex encoded without identifier or prefix
+		verifier: md5plain.Verifier,
+	},
 	HashNameScrypt: {
 		prefixes: []string{scrypt.Prefix, scrypt.Prefix_Linux},
 		verifier: scrypt.Verifier,
@@ -105,7 +121,7 @@ var knowVerifiers = map[HashName]prefixVerifier{
 	},
 }
 
-func (c *PasswordHashConfig) buildVerifiers() (verifiers []verifier.Verifier, prefixes []string, err error) {
+func (c *HashConfig) buildVerifiers() (verifiers []verifier.Verifier, prefixes []string, err error) {
 	verifiers = make([]verifier.Verifier, len(c.Verifiers))
 	prefixes = make([]string, 0, len(c.Verifiers)+1)
 	for i, name := range c.Verifiers {
@@ -145,11 +161,15 @@ func (c *HasherConfig) buildHasher() (hasher passwap.Hasher, prefixes []string, 
 	}
 }
 
+// decodeParams uses a mapstructure decoder from the Params map to dst.
+// The decoder fails when there are unused fields in dst.
+// It uses weak input typing, to allow conversion of env strings to ints.
 func (c *HasherConfig) decodeParams(dst any) error {
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		ErrorUnused: true,
-		ErrorUnset:  true,
-		Result:      dst,
+		ErrorUnused:      false,
+		ErrorUnset:       true,
+		WeaklyTypedInput: true,
+		Result:           dst,
 	})
 	if err != nil {
 		return err

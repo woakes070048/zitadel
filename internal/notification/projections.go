@@ -2,32 +2,28 @@ package notification
 
 import (
 	"context"
-
-	statik_fs "github.com/rakyll/statik/fs"
-	"github.com/zitadel/logging"
+	"time"
 
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/crypto"
+	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/notification/handlers"
 	_ "github.com/zitadel/zitadel/internal/notification/statik"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/query/projection"
-	"github.com/zitadel/zitadel/internal/telemetry/metrics"
 )
 
-const (
-	metricSuccessfulDeliveriesEmail = "successful_deliveries_email"
-	metricFailedDeliveriesEmail     = "failed_deliveries_email"
-	metricSuccessfulDeliveriesSMS   = "successful_deliveries_sms"
-	metricFailedDeliveriesSMS       = "failed_deliveries_sms"
-	metricSuccessfulDeliveriesJSON  = "successful_deliveries_json"
-	metricFailedDeliveriesJSON      = "failed_deliveries_json"
+var (
+	projections []*handler.Handler
+	worker      *handlers.NotificationWorker
 )
 
-func Start(
+func Register(
 	ctx context.Context,
-	userHandlerCustomConfig, quotaHandlerCustomConfig, telemetryHandlerCustomConfig projection.CustomConfig,
+	userHandlerCustomConfig, quotaHandlerCustomConfig, telemetryHandlerCustomConfig, backChannelLogoutHandlerCustomConfig projection.CustomConfig,
+	notificationWorkerConfig handlers.WorkerConfig,
 	telemetryCfg handlers.TelemetryPusherConfig,
 	externalDomain string,
 	externalPort uint16,
@@ -35,55 +31,48 @@ func Start(
 	commands *command.Commands,
 	queries *query.Queries,
 	es *eventstore.Eventstore,
-	assetsPrefix func(context.Context) string,
-	otpEmailTmpl string,
-	fileSystemPath string,
-	userEncryption, smtpEncryption, smsEncryption crypto.EncryptionAlgorithm,
+	otpEmailTmpl, fileSystemPath string,
+	userEncryption, smtpEncryption, smsEncryption, keysEncryptionAlg crypto.EncryptionAlgorithm,
+	tokenLifetime time.Duration,
+	client *database.DB,
 ) {
-	statikFS, err := statik_fs.NewWithNamespace("notification")
-	logging.OnError(err).Panic("unable to start listener")
-	err = metrics.RegisterCounter(metricSuccessfulDeliveriesEmail, "Successfully delivered emails")
-	logging.WithFields("metric", metricSuccessfulDeliveriesEmail).OnError(err).Panic("unable to register counter")
-	err = metrics.RegisterCounter(metricFailedDeliveriesEmail, "Failed email deliveries")
-	logging.WithFields("metric", metricFailedDeliveriesEmail).OnError(err).Panic("unable to register counter")
-	err = metrics.RegisterCounter(metricSuccessfulDeliveriesSMS, "Successfully delivered SMS")
-	logging.WithFields("metric", metricSuccessfulDeliveriesSMS).OnError(err).Panic("unable to register counter")
-	err = metrics.RegisterCounter(metricFailedDeliveriesSMS, "Failed SMS deliveries")
-	logging.WithFields("metric", metricFailedDeliveriesSMS).OnError(err).Panic("unable to register counter")
-	err = metrics.RegisterCounter(metricSuccessfulDeliveriesJSON, "Successfully delivered JSON messages")
-	logging.WithFields("metric", metricSuccessfulDeliveriesJSON).OnError(err).Panic("unable to register counter")
-	err = metrics.RegisterCounter(metricFailedDeliveriesJSON, "Failed JSON message deliveries")
-	logging.WithFields("metric", metricFailedDeliveriesJSON).OnError(err).Panic("unable to register counter")
-	q := handlers.NewNotificationQueries(queries, es, externalDomain, externalPort, externalSecure, fileSystemPath, userEncryption, smtpEncryption, smsEncryption, statikFS)
-	handlers.NewUserNotifier(
+	q := handlers.NewNotificationQueries(queries, es, externalDomain, externalPort, externalSecure, fileSystemPath, userEncryption, smtpEncryption, smsEncryption)
+	c := newChannels(q)
+	projections = append(projections, handlers.NewUserNotifier(ctx, projection.ApplyCustomConfig(userHandlerCustomConfig), commands, q, c, otpEmailTmpl, notificationWorkerConfig.LegacyEnabled))
+	projections = append(projections, handlers.NewQuotaNotifier(ctx, projection.ApplyCustomConfig(quotaHandlerCustomConfig), commands, q, c))
+	projections = append(projections, handlers.NewBackChannelLogoutNotifier(
 		ctx,
-		projection.ApplyCustomConfig(userHandlerCustomConfig),
+		projection.ApplyCustomConfig(backChannelLogoutHandlerCustomConfig),
 		commands,
 		q,
-		assetsPrefix,
-		otpEmailTmpl,
-		metricSuccessfulDeliveriesEmail,
-		metricFailedDeliveriesEmail,
-		metricSuccessfulDeliveriesSMS,
-		metricFailedDeliveriesSMS,
-	).Start()
-	handlers.NewQuotaNotifier(
-		ctx,
-		projection.ApplyCustomConfig(quotaHandlerCustomConfig),
-		commands,
-		q,
-		metricSuccessfulDeliveriesJSON,
-		metricFailedDeliveriesJSON,
-	).Start()
+		es,
+		keysEncryptionAlg,
+		c,
+		tokenLifetime,
+	))
 	if telemetryCfg.Enabled {
-		handlers.NewTelemetryPusher(
-			ctx,
-			telemetryCfg,
-			projection.ApplyCustomConfig(telemetryHandlerCustomConfig),
-			commands,
-			q,
-			metricSuccessfulDeliveriesJSON,
-			metricFailedDeliveriesJSON,
-		).Start()
+		projections = append(projections, handlers.NewTelemetryPusher(ctx, telemetryCfg, projection.ApplyCustomConfig(telemetryHandlerCustomConfig), commands, q, c))
 	}
+	worker = handlers.NewNotificationWorker(notificationWorkerConfig, commands, q, es, client, c)
+}
+
+func Start(ctx context.Context) {
+	for _, projection := range projections {
+		projection.Start(ctx)
+	}
+	worker.Start(ctx)
+}
+
+func ProjectInstance(ctx context.Context) error {
+	for _, projection := range projections {
+		_, err := projection.Trigger(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func Projections() []*handler.Handler {
+	return projections
 }

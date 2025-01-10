@@ -1,7 +1,7 @@
 import { Location } from '@angular/common';
 import { Component, EventEmitter, OnInit } from '@angular/core';
-import { MatLegacyDialog as MatDialog } from '@angular/material/legacy-dialog';
-import { MatLegacyTableDataSource as MatTableDataSource } from '@angular/material/legacy-table';
+import { MatDialog } from '@angular/material/dialog';
+import { MatTableDataSource } from '@angular/material/table';
 import { ActivatedRoute, Params, Router } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
 import { BehaviorSubject, from, Observable, of } from 'rxjs';
@@ -61,7 +61,7 @@ export class OwnedProjectDetailComponent implements OnInit {
   public refreshChanges$: EventEmitter<void> = new EventEmitter();
 
   public settingsList: SidenavSetting[] = [GENERAL, ROLES, PROJECTGRANTS, GRANTS];
-  public currentSetting: string | undefined = '';
+  public currentSetting: string = '';
   constructor(
     public translate: TranslateService,
     private route: ActivatedRoute,
@@ -72,12 +72,11 @@ export class OwnedProjectDetailComponent implements OnInit {
     private router: Router,
     private breadcrumbService: BreadcrumbService,
   ) {
+    this.currentSetting = 'general';
     route.queryParams.pipe(take(1)).subscribe((params: Params) => {
       const { id } = params;
       if (id) {
         this.currentSetting = id;
-      } else {
-        this.currentSetting = 'general';
       }
     });
   }

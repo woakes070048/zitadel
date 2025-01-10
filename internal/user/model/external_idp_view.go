@@ -1,10 +1,10 @@
 package model
 
 import (
-	"github.com/zitadel/zitadel/internal/domain"
-	caos_errors "github.com/zitadel/zitadel/internal/errors"
-
 	"time"
+
+	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type ExternalIDPView struct {
@@ -56,7 +56,7 @@ type ExternalIDPSearchResponse struct {
 
 func (r *ExternalIDPSearchRequest) EnsureLimit(limit uint64) error {
 	if r.Limit > limit {
-		return caos_errors.ThrowInvalidArgument(nil, "SEARCH-3n8fM", "Errors.Limit.ExceedsDefault")
+		return zerrors.ThrowInvalidArgument(nil, "SEARCH-3n8fM", "Errors.Limit.ExceedsDefault")
 	}
 	if r.Limit == 0 {
 		r.Limit = limit

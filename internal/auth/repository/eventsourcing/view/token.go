@@ -3,11 +3,10 @@ package view
 import (
 	"context"
 
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
 	usr_view "github.com/zitadel/zitadel/internal/user/repository/view"
 	"github.com/zitadel/zitadel/internal/user/repository/view/model"
-	"github.com/zitadel/zitadel/internal/view/repository"
 )
 
 const (
@@ -22,98 +21,24 @@ func (v *View) TokensByUserID(userID, instanceID string) ([]*model.TokenView, er
 	return usr_view.TokensByUserID(v.Db, tokenTable, userID, instanceID)
 }
 
-func (v *View) PutToken(token *model.TokenView, event *models.Event) error {
-	err := usr_view.PutToken(v.Db, tokenTable, token)
+func (v *View) GetLatestTokenSequence(ctx context.Context, instanceID string) (_ *query.CurrentState, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	q := &query.CurrentStateSearchQueries{
+		Queries: make([]query.SearchQuery, 2),
+	}
+	q.Queries[0], err = query.NewCurrentStatesInstanceIDSearchQuery(instanceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) PutTokens(token []*model.TokenView, event *models.Event) error {
-	err := usr_view.PutTokens(v.Db, tokenTable, token...)
+	q.Queries[1], err = query.NewCurrentStatesProjectionSearchQuery(tokenTable)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteToken(tokenID, instanceID string, event *models.Event) error {
-	err := usr_view.DeleteToken(v.Db, tokenTable, tokenID, instanceID)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
+	states, err := v.query.SearchCurrentStates(ctx, q)
+	if err != nil || states.SearchResponse.Count == 0 {
+		return nil, err
 	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteSessionTokens(agentID, userID, instanceID string, event *models.Event) error {
-	err := usr_view.DeleteSessionTokens(v.Db, tokenTable, agentID, userID, instanceID)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteUserTokens(userID, instanceID string, event *models.Event) error {
-	err := usr_view.DeleteUserTokens(v.Db, tokenTable, userID, instanceID)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteApplicationTokens(event *models.Event, ids ...string) error {
-	err := usr_view.DeleteApplicationTokens(v.Db, tokenTable, event.InstanceID, ids)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteTokensFromRefreshToken(refreshTokenID, instanceID string, event *models.Event) error {
-	err := usr_view.DeleteTokensFromRefreshToken(v.Db, tokenTable, refreshTokenID, instanceID)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteInstanceTokens(event *models.Event) error {
-	err := usr_view.DeleteInstanceTokens(v.Db, tokenTable, event.InstanceID)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) DeleteOrgTokens(event *models.Event) error {
-	err := usr_view.DeleteOrgTokens(v.Db, tokenTable, event.InstanceID, event.ResourceOwner)
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	return v.ProcessedTokenSequence(event)
-}
-
-func (v *View) GetLatestTokenSequence(ctx context.Context, instanceID string) (*repository.CurrentSequence, error) {
-	return v.latestSequence(ctx, tokenTable, instanceID)
-}
-
-func (v *View) GetLatestTokenSequences(ctx context.Context, instanceIDs []string) ([]*repository.CurrentSequence, error) {
-	return v.latestSequences(ctx, tokenTable, instanceIDs)
-}
-
-func (v *View) ProcessedTokenSequence(event *models.Event) error {
-	return v.saveCurrentSequence(tokenTable, event)
-}
-
-func (v *View) UpdateTokenSpoolerRunTimestamp(instanceIDs []string) error {
-	return v.updateSpoolerRunSequence(tokenTable, instanceIDs)
-}
-
-func (v *View) GetLatestTokenFailedEvent(sequence uint64, instanceID string) (*repository.FailedEvent, error) {
-	return v.latestFailedEvent(tokenTable, instanceID, sequence)
-}
-
-func (v *View) ProcessedTokenFailedEvent(failedEvent *repository.FailedEvent) error {
-	return v.saveFailedEvent(failedEvent)
+	return states.CurrentStates[0], nil
 }

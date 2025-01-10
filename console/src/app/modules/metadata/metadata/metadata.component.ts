@@ -1,6 +1,6 @@
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, ViewChild } from '@angular/core';
-import { MatLegacyTable as MatTable, MatLegacyTableDataSource as MatTableDataSource } from '@angular/material/legacy-table';
 import { MatSort } from '@angular/material/sort';
+import { MatTable, MatTableDataSource } from '@angular/material/table';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { Metadata } from 'src/app/proto/generated/zitadel/metadata_pb';
 
@@ -13,6 +13,7 @@ export class MetadataComponent implements OnChanges {
   @Input() public metadata: Metadata.AsObject[] = [];
   @Input() public disabled: boolean = false;
   @Input() public loading: boolean = false;
+  @Input({ required: true }) public description!: string;
   @Output() public editClicked: EventEmitter<void> = new EventEmitter();
   @Output() public refresh: EventEmitter<void> = new EventEmitter();
 

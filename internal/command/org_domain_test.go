@@ -4,23 +4,21 @@ import (
 	"context"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/text/language"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/id"
 	id_mock "github.com/zitadel/zitadel/internal/id/mock"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestAddDomain(t *testing.T) {
@@ -46,7 +44,7 @@ func TestAddDomain(t *testing.T) {
 				domain: "",
 			},
 			want: Want{
-				ValidationErr: errors.ThrowInvalidArgument(nil, "ORG-r3h4J", "Errors.Invalid.Argument"),
+				ValidationErr: zerrors.ThrowInvalidArgument(nil, "ORG-r3h4J", "Errors.Invalid.Argument"),
 			},
 		},
 		{
@@ -106,7 +104,7 @@ func TestAddDomain(t *testing.T) {
 				Commands: []eventstore.Command{
 					org.NewDomainAddedEvent(context.Background(), &agg.Aggregate, "domain"),
 					org.NewDomainVerifiedEvent(context.Background(), &agg.Aggregate, "domain"),
-					user.NewDomainClaimedEvent(context.Background(), &user.NewAggregate("userID1", "org2").Aggregate, "newID@temporary.domain", "username", false),
+					user.NewDomainClaimedEvent(http.WithRequestedHost(context.Background(), "domain"), &user.NewAggregate("userID1", "org2").Aggregate, "newID@temporary.domain", "username", false),
 				},
 			},
 		},
@@ -125,7 +123,7 @@ func TestAddDomain(t *testing.T) {
 				},
 			},
 			want: Want{
-				CreateErr: errors.ThrowAlreadyExists(nil, "", ""),
+				CreateErr: zerrors.ThrowAlreadyExists(nil, "", ""),
 			},
 		},
 	}
@@ -133,7 +131,7 @@ func TestAddDomain(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			AssertValidation(
 				t,
-				authz.WithRequestedDomain(context.Background(), "domain"),
+				http.WithRequestedHost(context.Background(), "domain"),
 				(&Commands{idGenerator: tt.args.idGenerator}).prepareAddOrgDomain(tt.args.a, tt.args.domain, tt.args.claimedUserIDs),
 				tt.args.filter,
 				tt.want,
@@ -160,7 +158,7 @@ func TestVerifyDomain(t *testing.T) {
 				domain: "",
 			},
 			want: Want{
-				ValidationErr: errors.ThrowInvalidArgument(nil, "ORG-yqlVQ", "Errors.Invalid.Argument"),
+				ValidationErr: zerrors.ThrowInvalidArgument(nil, "ORG-yqlVQ", "Errors.Invalid.Argument"),
 			},
 		},
 		{
@@ -204,7 +202,7 @@ func TestSetDomainPrimary(t *testing.T) {
 				domain: "",
 			},
 			want: Want{
-				ValidationErr: errors.ThrowInvalidArgument(nil, "ORG-gmNqY", "Errors.Invalid.Argument"),
+				ValidationErr: zerrors.ThrowInvalidArgument(nil, "ORG-gmNqY", "Errors.Invalid.Argument"),
 			},
 		},
 		{
@@ -217,7 +215,7 @@ func TestSetDomainPrimary(t *testing.T) {
 				},
 			},
 			want: Want{
-				CreateErr: errors.ThrowNotFound(nil, "", ""),
+				CreateErr: zerrors.ThrowNotFound(nil, "", ""),
 			},
 		},
 		{
@@ -230,7 +228,7 @@ func TestSetDomainPrimary(t *testing.T) {
 				},
 			},
 			want: Want{
-				CreateErr: errors.ThrowPreconditionFailed(nil, "", ""),
+				CreateErr: zerrors.ThrowPreconditionFailed(nil, "", ""),
 			},
 		},
 		{
@@ -248,7 +246,7 @@ func TestSetDomainPrimary(t *testing.T) {
 				},
 			},
 			want: Want{
-				CreateErr: errors.ThrowPreconditionFailed(nil, "", ""),
+				CreateErr: zerrors.ThrowPreconditionFailed(nil, "", ""),
 			},
 		},
 		{
@@ -309,7 +307,7 @@ func TestCommandSide_AddOrgDomain(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -339,7 +337,7 @@ func TestCommandSide_AddOrgDomain(t *testing.T) {
 				domain: "domain.ch",
 			},
 			res: res{
-				err: errors.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
@@ -366,12 +364,10 @@ func TestCommandSide_AddOrgDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-						},
+						org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
 					),
 				),
 			},
@@ -400,7 +396,7 @@ func TestCommandSide_AddOrgDomain(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -442,7 +438,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -459,7 +455,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -479,7 +475,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -508,7 +504,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -549,7 +545,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -572,19 +568,17 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerificationAddedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-								domain.OrgDomainValidationTypeDNS,
-								&crypto.CryptoValue{
-									CryptoType: crypto.TypeEncryption,
-									Algorithm:  "enc",
-									KeyID:      "id",
-									Crypted:    []byte("a"),
-								},
-							)),
-						},
+						org.NewDomainVerificationAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+							domain.OrgDomainValidationTypeDNS,
+							&crypto.CryptoValue{
+								CryptoType: crypto.TypeEncryption,
+								Algorithm:  "enc",
+								KeyID:      "id",
+								Crypted:    []byte("a"),
+							},
+						),
 					),
 				),
 				secretGenerator: GetMockSecretGenerator(t),
@@ -624,19 +618,17 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerificationAddedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-								domain.OrgDomainValidationTypeHTTP,
-								&crypto.CryptoValue{
-									CryptoType: crypto.TypeEncryption,
-									Algorithm:  "enc",
-									KeyID:      "id",
-									Crypted:    []byte("a"),
-								},
-							)),
-						},
+						org.NewDomainVerificationAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+							domain.OrgDomainValidationTypeHTTP,
+							&crypto.CryptoValue{
+								CryptoType: crypto.TypeEncryption,
+								Algorithm:  "enc",
+								KeyID:      "id",
+								Crypted:    []byte("a"),
+							},
+						),
 					),
 				),
 				secretGenerator: GetMockSecretGenerator(t),
@@ -680,7 +672,7 @@ func TestCommandSide_GenerateOrgDomainValidation(t *testing.T) {
 
 func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 	type fields struct {
-		eventstore           *eventstore.Eventstore
+		eventstore           func(*testing.T) *eventstore.Eventstore
 		idGenerator          id.Generator
 		secretGenerator      crypto.Generator
 		alg                  crypto.EncryptionAlgorithm
@@ -704,9 +696,7 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 		{
 			name: "invalid domain, error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx: context.Background(),
@@ -717,15 +707,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "missing aggregateid, error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx: context.Background(),
@@ -734,14 +722,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "domain not exists, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -763,14 +750,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
 			name: "domain already verified, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -804,14 +790,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
 			name: "no code existing, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -839,14 +824,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
 			name: "invalid domain verification, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -875,12 +859,10 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerificationFailedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-						},
+						org.NewDomainVerificationFailedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
 					),
 				),
 				alg:                  crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
@@ -897,14 +879,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "domain verification, ok",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -933,13 +914,10 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("domain.ch")),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
 					),
 				),
 				alg:                  crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
@@ -964,8 +942,7 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 		{
 			name: "domain verification, claimed users not found, ok",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -995,13 +972,10 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 					),
 					expectFilter(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("domain.ch")),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
 					),
 				),
 				alg:                  crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
@@ -1027,8 +1001,7 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 		{
 			name: "domain verification, claimed users, ok",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							org.NewOrgAddedEvent(context.Background(),
@@ -1078,21 +1051,16 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 								&org.NewAggregate("org2").Aggregate,
 								false, false, false))),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-							eventFromEventPusher(user.NewDomainClaimedEvent(context.Background(),
-								&user.NewAggregate("user1", "org2").Aggregate,
-								"tempid@temporary.zitadel.ch",
-								"username@domain.ch",
-								false,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("domain.ch")),
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username@domain.ch", "org2", false)),
-						uniqueConstraintsFromEventConstraint(user.NewAddUsernameUniqueConstraint("tempid@temporary.zitadel.ch", "org2", false)),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
+						user.NewDomainClaimedEvent(http.WithRequestedHost(context.Background(), "zitadel.ch"),
+							&user.NewAggregate("user1", "org2").Aggregate,
+							"tempid@temporary.zitadel.ch",
+							"username@domain.ch",
+							false,
+						),
 					),
 				),
 				alg:                  crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
@@ -1120,13 +1088,13 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &Commands{
-				eventstore:                  tt.fields.eventstore,
+				eventstore:                  tt.fields.eventstore(t),
 				domainVerificationGenerator: tt.fields.secretGenerator,
 				domainVerificationAlg:       tt.fields.alg,
 				domainVerificationValidator: tt.fields.domainValidationFunc,
 				idGenerator:                 tt.fields.idGenerator,
 			}
-			got, err := r.ValidateOrgDomain(authz.WithRequestedDomain(tt.args.ctx, "zitadel.ch"), tt.args.domain, tt.args.claimedUserIDs)
+			got, err := r.ValidateOrgDomain(http.WithRequestedHost(tt.args.ctx, "zitadel.ch"), tt.args.domain, tt.args.claimedUserIDs)
 			if tt.res.err == nil {
 				assert.NoError(t, err)
 			}
@@ -1134,7 +1102,7 @@ func TestCommandSide_ValidateOrgDomain(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1174,7 +1142,7 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1191,7 +1159,7 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1220,7 +1188,7 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1254,7 +1222,7 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -1283,12 +1251,10 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch",
-							)),
-						},
+						org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch",
+						),
 					),
 				),
 			},
@@ -1321,7 +1287,7 @@ func TestCommandSide_SetPrimaryDomain(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1361,7 +1327,7 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1378,7 +1344,7 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1407,7 +1373,7 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1453,7 +1419,7 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 				},
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -1476,12 +1442,10 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainRemovedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch", false,
-							)),
-						},
+						org.NewDomainRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch", false,
+						),
 					),
 				),
 			},
@@ -1526,13 +1490,10 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewDomainRemovedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-								"domain.ch", true,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgDomainUniqueConstraint("domain.ch")),
+						org.NewDomainRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"domain.ch", true,
+						),
 					),
 				),
 			},
@@ -1565,14 +1526,14 @@ func TestCommandSide_RemoveOrgDomain(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
 }
 
 func invalidDomainVerification(domain, token, verifier string, checkType http.CheckType) error {
-	return errors.ThrowInvalidArgument(nil, "HTTP-GH422", "Errors.Internal")
+	return zerrors.ThrowInvalidArgument(nil, "HTTP-GH422", "Errors.Internal")
 }
 
 func validDomainVerification(domain, token, verifier string, checkType http.CheckType) error {

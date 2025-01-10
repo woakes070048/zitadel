@@ -71,6 +71,7 @@ message Query {
         option (validate.required) = true;
 
         IdsQuery id_query = 1;
+        DomainsQuery domain_query = 2;
     }
 }
 
@@ -79,6 +80,17 @@ message IdsQuery {
     repeated string ids = 1 [
         (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
             description: "4820840938402429";
+        }
+    ];
+}
+
+message DomainsQuery {
+    repeated string domains = 1  [
+        (validate.rules).repeated = {max_items: 20, items: {string: {min_len: 1, max_len: 100}}},
+        (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
+            max_items: 20,
+            example: "[\"my-instace.zitadel.cloud\", \"auth.custom.com\"]";
+            description: "Return the instances that have the requested domains";
         }
     ];
 }
@@ -150,4 +162,21 @@ enum DomainFieldName {
     DOMAIN_FIELD_NAME_PRIMARY = 2;
     DOMAIN_FIELD_NAME_GENERATED = 3;
     DOMAIN_FIELD_NAME_CREATION_DATE = 4;
+}
+
+message TrustedDomain {
+    zitadel.v1.ObjectDetails details = 1;
+    string domain = 2 [
+        (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
+            example: "\"zitadel.com\""
+        }
+    ];
+}
+
+message TrustedDomainSearchQuery {
+    oneof query {
+        option (validate.required) = true;
+
+        DomainQuery domain_query = 1;
+    }
 }

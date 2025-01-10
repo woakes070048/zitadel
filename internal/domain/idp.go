@@ -37,6 +37,7 @@ const (
 	IDPTypeGitLabSelfHosted
 	IDPTypeGoogle
 	IDPTypeApple
+	IDPTypeSAML
 )
 
 func (t IDPType) GetCSSClass() string {
@@ -57,7 +58,8 @@ func (t IDPType) GetCSSClass() string {
 		IDPTypeOIDC,
 		IDPTypeJWT,
 		IDPTypeOAuth,
-		IDPTypeLDAP:
+		IDPTypeLDAP,
+		IDPTypeSAML:
 		fallthrough
 	default:
 		return ""
@@ -90,7 +92,8 @@ func (t IDPType) DisplayName() string {
 		IDPTypeLDAP,
 		IDPTypeAzureAD,
 		IDPTypeGitHubEnterprise,
-		IDPTypeGitLabSelfHosted:
+		IDPTypeGitLabSelfHosted,
+		IDPTypeSAML:
 		fallthrough
 	default:
 		// we should never get here, so log it
@@ -123,3 +126,20 @@ func (s IDPIntentState) Valid() bool {
 func (s IDPIntentState) Exists() bool {
 	return s != IDPIntentStateUnspecified && s != IDPIntentStateFailed //TODO: ?
 }
+
+type AutoLinkingOption uint8
+
+const (
+	AutoLinkingOptionUnspecified AutoLinkingOption = iota
+	AutoLinkingOptionUsername
+	AutoLinkingOptionEmail
+)
+
+type SAMLNameIDFormat uint8
+
+const (
+	SAMLNameIDFormatUnspecified SAMLNameIDFormat = iota
+	SAMLNameIDFormatEmailAddress
+	SAMLNameIDFormatPersistent
+	SAMLNameIDFormatTransient
+)

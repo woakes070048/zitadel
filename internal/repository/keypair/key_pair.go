@@ -2,14 +2,11 @@ package keypair
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -20,7 +17,7 @@ const (
 type AddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Usage      domain.KeyUsage `json:"usage"`
+	Usage      crypto.KeyUsage `json:"usage"`
 	Algorithm  string          `json:"algorithm"`
 	PrivateKey *Key            `json:"privateKey"`
 	PublicKey  *Key            `json:"publicKey"`
@@ -31,18 +28,18 @@ type Key struct {
 	Expiry time.Time           `json:"expiry"`
 }
 
-func (e *AddedEvent) Data() interface{} {
+func (e *AddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *AddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *AddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
 func NewAddedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
-	usage domain.KeyUsage,
+	usage crypto.KeyUsage,
 	algorithm string,
 	privateCrypto,
 	publicCrypto *crypto.CryptoValue,
@@ -67,14 +64,14 @@ func NewAddedEvent(
 	}
 }
 
-func AddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func AddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &AddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "KEY-4n8vs", "unable to unmarshal key pair added")
+		return nil, zerrors.ThrowInternal(err, "KEY-4n8vs", "unable to unmarshal key pair added")
 	}
 
 	return e, nil

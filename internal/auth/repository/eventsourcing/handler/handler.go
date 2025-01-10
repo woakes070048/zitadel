@@ -4,84 +4,99 @@ import (
 	"context"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/view"
-	v1 "github.com/zitadel/zitadel/internal/eventstore/v1"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/query"
+	"github.com/zitadel/zitadel/internal/database"
+	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	handler2 "github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	"github.com/zitadel/zitadel/internal/id"
 	query2 "github.com/zitadel/zitadel/internal/query"
-	"github.com/zitadel/zitadel/internal/view/repository"
 )
 
-type Configs map[string]*Config
-
 type Config struct {
+	Client     *database.DB
+	Eventstore *eventstore.Eventstore
+
+	BulkLimit             uint64
+	FailureCountUntilSkip uint64
+	TransactionDuration   time.Duration
+	Handlers              map[string]*ConfigOverwrites
+
+	ActiveInstancer interface {
+		ActiveInstances() []string
+	}
+}
+
+type ConfigOverwrites struct {
 	MinimumCycleDuration time.Duration
 }
 
-type handler struct {
-	view                *view.View
-	bulkLimit           uint64
-	cycleDuration       time.Duration
-	errorCountUntilSkip uint64
+var projections []*handler.Handler
 
-	es v1.Eventstore
+func Register(ctx context.Context, configs Config, view *view.View, queries *query2.Queries) {
+	// make sure the slice does not contain old values
+	projections = nil
+
+	projections = append(projections, newUser(ctx,
+		configs.overwrite("User"),
+		view,
+		queries,
+	))
+
+	projections = append(projections, newUserSession(ctx,
+		configs.overwrite("UserSession"),
+		view,
+		queries,
+		id.SonyFlakeGenerator(),
+	))
+
+	projections = append(projections, newToken(ctx,
+		configs.overwrite("Token"),
+		view,
+	))
+
+	projections = append(projections, newRefreshToken(ctx,
+		configs.overwrite("RefreshToken"),
+		view,
+	))
 }
 
-func (h *handler) Eventstore() v1.Eventstore {
-	return h.es
-}
-
-func Register(ctx context.Context, configs Configs, bulkLimit, errorCount uint64, view *view.View, es v1.Eventstore, queries *query2.Queries) []query.Handler {
-	return []query.Handler{
-		newUser(ctx,
-			handler{view, bulkLimit, configs.cycleDuration("User"), errorCount, es}, queries),
-		newUserSession(ctx,
-			handler{view, bulkLimit, configs.cycleDuration("UserSession"), errorCount, es}, queries),
-		newToken(ctx,
-			handler{view, bulkLimit, configs.cycleDuration("Token"), errorCount, es}),
-		newRefreshToken(ctx, handler{view, bulkLimit, configs.cycleDuration("RefreshToken"), errorCount, es}),
+func Start(ctx context.Context) {
+	for _, projection := range projections {
+		projection.Start(ctx)
 	}
 }
 
-func (configs Configs) cycleDuration(viewModel string) time.Duration {
-	c, ok := configs[viewModel]
-	if !ok {
-		return 3 * time.Minute
-	}
-	return c.MinimumCycleDuration
+func Projections() []*handler2.Handler {
+	return projections
 }
 
-func (h *handler) MinimumCycleDuration() time.Duration {
-	return h.cycleDuration
-}
-
-func (h *handler) LockDuration() time.Duration {
-	return h.cycleDuration / 3
-}
-
-func (h *handler) QueryLimit() uint64 {
-	return h.bulkLimit
-}
-
-func withInstanceID(ctx context.Context, instanceID string) context.Context {
-	return authz.WithInstanceID(ctx, instanceID)
-}
-
-func newSearchQuery(sequences []*repository.CurrentSequence, aggregateTypes []models.AggregateType, instanceIDs []string) *models.SearchQuery {
-	searchQuery := models.NewSearchQuery()
-	for _, instanceID := range instanceIDs {
-		var seq uint64
-		for _, sequence := range sequences {
-			if sequence.InstanceID == instanceID {
-				seq = sequence.CurrentSequence
-				break
-			}
+func ProjectInstance(ctx context.Context) error {
+	for _, projection := range projections {
+		_, err := projection.Trigger(ctx)
+		if err != nil {
+			return err
 		}
-		searchQuery.AddQuery().
-			AggregateTypeFilter(aggregateTypes...).
-			LatestSequenceFilter(seq).
-			InstanceIDFilter(instanceID)
 	}
-	return searchQuery
+	return nil
+}
+
+func (config Config) overwrite(viewModel string) handler2.Config {
+	c := handler2.Config{
+		Client:              config.Client,
+		Eventstore:          config.Eventstore,
+		BulkLimit:           uint16(config.BulkLimit),
+		RequeueEvery:        3 * time.Minute,
+		MaxFailureCount:     uint8(config.FailureCountUntilSkip),
+		TransactionDuration: config.TransactionDuration,
+		ActiveInstancer:     config.ActiveInstancer,
+	}
+	overwrite, ok := config.Handlers[viewModel]
+	if !ok {
+		return c
+	}
+	if overwrite.MinimumCycleDuration > 0 {
+		c.RequeueEvery = overwrite.MinimumCycleDuration
+	}
+	return c
 }

@@ -15,11 +15,14 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/zitadel/zitadel/internal/database"
+	db_mock "github.com/zitadel/zitadel/internal/database/mock"
 )
 
 var (
 	testNow = time.Now()
+	dayNow  = testNow.Truncate(24 * time.Hour)
 )
 
 // assertPrepare checks if the prepare func executes the correct sql query and returns the correct object
@@ -32,7 +35,7 @@ var (
 func assertPrepare(t *testing.T, prepareFunc, expectedObject interface{}, sqlExpectation sqlExpectation, isErr checkErr, prepareArgs ...reflect.Value) bool {
 	t.Helper()
 
-	client, mock, err := sqlmock.New()
+	client, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 	if err != nil {
 		t.Fatalf("failed to build mock client: %v", err)
 	}
@@ -54,7 +57,7 @@ func assertPrepare(t *testing.T, prepareFunc, expectedObject interface{}, sqlExp
 		}
 		return isErr(err)
 	}
-	object, ok, didScan := execScan(&database.DB{DB: client}, builder, scan, errCheck)
+	object, ok, didScan := execScan(t, &database.DB{DB: client}, builder, scan, errCheck)
 	if !ok {
 		t.Error(object)
 		return false
@@ -79,10 +82,8 @@ type sqlExpectation func(sqlmock.Sqlmock) sqlmock.Sqlmock
 
 func mockQuery(stmt string, cols []string, row []driver.Value, args ...driver.Value) func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
 	return func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
-		m.ExpectBegin()
 		q := m.ExpectQuery(stmt).WithArgs(args...)
-		m.ExpectCommit()
-		result := sqlmock.NewRows(cols)
+		result := m.NewRows(cols)
 		if len(row) > 0 {
 			result.AddRow(row...)
 		}
@@ -93,10 +94,8 @@ func mockQuery(stmt string, cols []string, row []driver.Value, args ...driver.Va
 
 func mockQueryScanErr(stmt string, cols []string, row []driver.Value, args ...driver.Value) func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
 	return func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
-		m.ExpectBegin()
 		q := m.ExpectQuery(stmt).WithArgs(args...)
-		m.ExpectRollback()
-		result := sqlmock.NewRows(cols)
+		result := m.NewRows(cols)
 		if len(row) > 0 {
 			result.AddRow(row...)
 		}
@@ -107,10 +106,8 @@ func mockQueryScanErr(stmt string, cols []string, row []driver.Value, args ...dr
 
 func mockQueries(stmt string, cols []string, rows [][]driver.Value, args ...driver.Value) func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
 	return func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
-		m.ExpectBegin()
 		q := m.ExpectQuery(stmt).WithArgs(args...)
-		m.ExpectCommit()
-		result := sqlmock.NewRows(cols)
+		result := m.NewRows(cols)
 		count := uint64(len(rows))
 		for _, row := range rows {
 			if cols[len(cols)-1] == "count" {
@@ -126,10 +123,8 @@ func mockQueries(stmt string, cols []string, rows [][]driver.Value, args ...driv
 
 func mockQueriesScanErr(stmt string, cols []string, rows [][]driver.Value, args ...driver.Value) func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
 	return func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
-		m.ExpectBegin()
 		q := m.ExpectQuery(stmt).WithArgs(args...)
-		m.ExpectRollback()
-		result := sqlmock.NewRows(cols)
+		result := m.NewRows(cols)
 		count := uint64(len(rows))
 		for _, row := range rows {
 			if cols[len(cols)-1] == "count" {
@@ -145,16 +140,14 @@ func mockQueriesScanErr(stmt string, cols []string, rows [][]driver.Value, args 
 
 func mockQueryErr(stmt string, err error, args ...driver.Value) func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
 	return func(m sqlmock.Sqlmock) sqlmock.Sqlmock {
-		m.ExpectBegin()
 		q := m.ExpectQuery(stmt).WithArgs(args...)
 		q.WillReturnError(err)
-		m.ExpectRollback()
 		return m
 	}
 }
 
 func execMock(t testing.TB, exp sqlExpectation, run func(db *sql.DB)) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 	require.NoError(t, err)
 	defer db.Close()
 	mock = exp(mock)
@@ -168,7 +161,9 @@ var (
 	selectBuilderType = reflect.TypeOf(sq.SelectBuilder{})
 )
 
-func execScan(client *database.DB, builder sq.SelectBuilder, scan interface{}, errCheck checkErr) (object interface{}, ok bool, didScan bool) {
+func execScan(t testing.TB, client *database.DB, builder sq.SelectBuilder, scan interface{}, errCheck checkErr) (object interface{}, ok bool, didScan bool) {
+	t.Helper()
+
 	scanType := reflect.TypeOf(scan)
 	err := validateScan(scanType)
 	if err != nil {
@@ -177,7 +172,7 @@ func execScan(client *database.DB, builder sq.SelectBuilder, scan interface{}, e
 
 	stmt, args, err := builder.ToSql()
 	if err != nil {
-		return fmt.Errorf("unexpeted error from sql builder: %w", err), false, false
+		return fmt.Errorf("unexpected error from sql builder: %w", err), false, false
 	}
 
 	//resultSet represents *sql.Row or *sql.Rows,
@@ -199,6 +194,9 @@ func execScan(client *database.DB, builder sq.SelectBuilder, scan interface{}, e
 		// if scan(*sql.Row)...
 	} else if scanType.In(0).AssignableTo(rowType) {
 		err = client.QueryRow(func(r *sql.Row) error {
+			if r.Err() != nil {
+				return r.Err()
+			}
 			didScan = true
 			res = reflect.ValueOf(scan).Call([]reflect.Value{reflect.ValueOf(r)})
 			if err, ok := res[1].Interface().(error); ok {
@@ -213,6 +211,9 @@ func execScan(client *database.DB, builder sq.SelectBuilder, scan interface{}, e
 
 	if err != nil {
 		err, ok := errCheck(err)
+		if !ok {
+			t.Fatal(err)
+		}
 		if didScan {
 			return res[0].Interface(), ok, didScan
 		}
@@ -256,8 +257,8 @@ func validatePrepare(prepareType reflect.Type) error {
 	if prepareType.Kind() != reflect.Func {
 		return errors.New("prepare is not a function")
 	}
-	if prepareType.NumIn() < 2 {
-		return fmt.Errorf("prepare: invalid number of inputs: want: 0 got %d", prepareType.NumIn())
+	if prepareType.NumIn() != 0 && prepareType.NumIn() != 2 {
+		return fmt.Errorf("prepare: invalid number of inputs: want: 0 or 2 got %d", prepareType.NumIn())
 	}
 	if prepareType.NumOut() != 2 {
 		return fmt.Errorf("prepare: invalid number of outputs: want: 2 got %d", prepareType.NumOut())

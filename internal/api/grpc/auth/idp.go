@@ -13,13 +13,13 @@ func (s *Server) ListMyLinkedIDPs(ctx context.Context, req *auth_pb.ListMyLinked
 	if err != nil {
 		return nil, err
 	}
-	links, err := s.query.IDPUserLinks(ctx, q, false)
+	links, err := s.query.IDPUserLinks(ctx, q, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &auth_pb.ListMyLinkedIDPsResponse{
 		Result:  idp_grpc.IDPUserLinksToPb(links.Links),
-		Details: object.ToListDetails(links.Count, links.Sequence, links.Timestamp),
+		Details: object.ToListDetails(links.Count, links.Sequence, links.LastRun),
 	}, nil
 }
 

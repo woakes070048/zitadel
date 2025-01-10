@@ -2,14 +2,13 @@ package user
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/eventstore"
-
+	"github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/notification/senders"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -41,11 +40,11 @@ type HumanOTPAddedEvent struct {
 	Secret *crypto.CryptoValue `json:"otpSecret,omitempty"`
 }
 
-func (e *HumanOTPAddedEvent) Data() interface{} {
+func (e *HumanOTPAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -64,13 +63,13 @@ func NewHumanOTPAddedEvent(
 	}
 }
 
-func HumanOTPAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanOTPAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	otpAdded := &HumanOTPAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, otpAdded)
+	err := event.Unmarshal(otpAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp added")
+		return nil, zerrors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp added")
 	}
 	return otpAdded, nil
 }
@@ -80,11 +79,11 @@ type HumanOTPVerifiedEvent struct {
 	UserAgentID          string `json:"userAgentID,omitempty"`
 }
 
-func (e *HumanOTPVerifiedEvent) Data() interface{} {
+func (e *HumanOTPVerifiedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPVerifiedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPVerifiedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -103,7 +102,7 @@ func NewHumanOTPVerifiedEvent(
 	}
 }
 
-func HumanOTPVerifiedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanOTPVerifiedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &HumanOTPVerifiedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
@@ -113,11 +112,11 @@ type HumanOTPRemovedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanOTPRemovedEvent) Data() interface{} {
+func (e *HumanOTPRemovedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanOTPRemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPRemovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -134,7 +133,7 @@ func NewHumanOTPRemovedEvent(
 	}
 }
 
-func HumanOTPRemovedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanOTPRemovedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &HumanOTPRemovedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
@@ -145,11 +144,11 @@ type HumanOTPCheckSucceededEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPCheckSucceededEvent) Data() interface{} {
+func (e *HumanOTPCheckSucceededEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPCheckSucceededEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -168,13 +167,13 @@ func NewHumanOTPCheckSucceededEvent(
 	}
 }
 
-func HumanOTPCheckSucceededEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanOTPCheckSucceededEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	otpAdded := &HumanOTPCheckSucceededEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, otpAdded)
+	err := event.Unmarshal(otpAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp check succeeded")
+		return nil, zerrors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp check succeeded")
 	}
 	return otpAdded, nil
 }
@@ -184,11 +183,11 @@ type HumanOTPCheckFailedEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPCheckFailedEvent) Data() interface{} {
+func (e *HumanOTPCheckFailedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPCheckFailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -207,13 +206,13 @@ func NewHumanOTPCheckFailedEvent(
 	}
 }
 
-func HumanOTPCheckFailedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanOTPCheckFailedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	otpAdded := &HumanOTPCheckFailedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, otpAdded)
+	err := event.Unmarshal(otpAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp check failed")
+		return nil, zerrors.ThrowInternal(err, "USER-Ns9df", "unable to unmarshal human otp check failed")
 	}
 	return otpAdded, nil
 }
@@ -222,11 +221,11 @@ type HumanOTPSMSAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanOTPSMSAddedEvent) Data() interface{} {
+func (e *HumanOTPSMSAddedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanOTPSMSAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -251,11 +250,11 @@ type HumanOTPSMSRemovedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanOTPSMSRemovedEvent) Data() interface{} {
+func (e *HumanOTPSMSRemovedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanOTPSMSRemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSRemovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -279,21 +278,27 @@ func NewHumanOTPSMSRemovedEvent(
 type HumanOTPSMSCodeAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Code   *crypto.CryptoValue `json:"code,omitempty"`
-	Expiry time.Duration       `json:"expiry,omitempty"`
+	Code              *crypto.CryptoValue `json:"code,omitempty"`
+	Expiry            time.Duration       `json:"expiry,omitempty"`
+	TriggeredAtOrigin string              `json:"triggerOrigin,omitempty"`
+	GeneratorID       string              `json:"generatorId,omitempty"`
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPSMSCodeAddedEvent) Data() interface{} {
+func (e *HumanOTPSMSCodeAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPSMSCodeAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSCodeAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
 func (e *HumanOTPSMSCodeAddedEvent) SetBaseEvent(event *eventstore.BaseEvent) {
 	e.BaseEvent = *event
+}
+
+func (e *HumanOTPSMSCodeAddedEvent) TriggerOrigin() string {
+	return e.TriggeredAtOrigin
 }
 
 func NewHumanOTPSMSCodeAddedEvent(
@@ -302,6 +307,7 @@ func NewHumanOTPSMSCodeAddedEvent(
 	code *crypto.CryptoValue,
 	expiry time.Duration,
 	info *AuthRequestInfo,
+	generatorID string,
 ) *HumanOTPSMSCodeAddedEvent {
 	return &HumanOTPSMSCodeAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -309,25 +315,25 @@ func NewHumanOTPSMSCodeAddedEvent(
 			aggregate,
 			HumanOTPSMSCodeAddedType,
 		),
-		Code:            code,
-		Expiry:          expiry,
-		AuthRequestInfo: info,
+		Code:              code,
+		Expiry:            expiry,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
+		AuthRequestInfo:   info,
+		GeneratorID:       generatorID,
 	}
 }
 
 type HumanOTPSMSCodeSentEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Code   *crypto.CryptoValue `json:"code,omitempty"`
-	Expiry time.Duration       `json:"expiry,omitempty"`
-	*AuthRequestInfo
+	GeneratorInfo *senders.CodeGeneratorInfo `json:"generatorInfo,omitempty"`
 }
 
-func (e *HumanOTPSMSCodeSentEvent) Data() interface{} {
+func (e *HumanOTPSMSCodeSentEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPSMSCodeSentEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSCodeSentEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -338,6 +344,7 @@ func (e *HumanOTPSMSCodeSentEvent) SetBaseEvent(event *eventstore.BaseEvent) {
 func NewHumanOTPSMSCodeSentEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
+	generatorInfo *senders.CodeGeneratorInfo,
 ) *HumanOTPSMSCodeSentEvent {
 	return &HumanOTPSMSCodeSentEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -345,6 +352,7 @@ func NewHumanOTPSMSCodeSentEvent(
 			aggregate,
 			HumanOTPSMSCodeSentType,
 		),
+		GeneratorInfo: generatorInfo,
 	}
 }
 
@@ -353,11 +361,11 @@ type HumanOTPSMSCheckSucceededEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPSMSCheckSucceededEvent) Data() interface{} {
+func (e *HumanOTPSMSCheckSucceededEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPSMSCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSCheckSucceededEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -385,11 +393,11 @@ type HumanOTPSMSCheckFailedEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPSMSCheckFailedEvent) Data() interface{} {
+func (e *HumanOTPSMSCheckFailedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPSMSCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPSMSCheckFailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -416,11 +424,11 @@ type HumanOTPEmailAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanOTPEmailAddedEvent) Data() interface{} {
+func (e *HumanOTPEmailAddedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanOTPEmailAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -445,11 +453,11 @@ type HumanOTPEmailRemovedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *HumanOTPEmailRemovedEvent) Data() interface{} {
+func (e *HumanOTPEmailRemovedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *HumanOTPEmailRemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailRemovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -473,21 +481,26 @@ func NewHumanOTPEmailRemovedEvent(
 type HumanOTPEmailCodeAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Code   *crypto.CryptoValue `json:"code,omitempty"`
-	Expiry time.Duration       `json:"expiry,omitempty"`
+	Code              *crypto.CryptoValue `json:"code,omitempty"`
+	Expiry            time.Duration       `json:"expiry,omitempty"`
+	TriggeredAtOrigin string              `json:"triggerOrigin,omitempty"`
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPEmailCodeAddedEvent) Data() interface{} {
+func (e *HumanOTPEmailCodeAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPEmailCodeAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailCodeAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
 func (e *HumanOTPEmailCodeAddedEvent) SetBaseEvent(event *eventstore.BaseEvent) {
 	e.BaseEvent = *event
+}
+
+func (e *HumanOTPEmailCodeAddedEvent) TriggerOrigin() string {
+	return e.TriggeredAtOrigin
 }
 
 func NewHumanOTPEmailCodeAddedEvent(
@@ -503,9 +516,10 @@ func NewHumanOTPEmailCodeAddedEvent(
 			aggregate,
 			HumanOTPEmailCodeAddedType,
 		),
-		Code:            code,
-		Expiry:          expiry,
-		AuthRequestInfo: info,
+		Code:              code,
+		Expiry:            expiry,
+		AuthRequestInfo:   info,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
 	}
 }
 
@@ -517,11 +531,11 @@ type HumanOTPEmailCodeSentEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPEmailCodeSentEvent) Data() interface{} {
+func (e *HumanOTPEmailCodeSentEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPEmailCodeSentEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailCodeSentEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -547,11 +561,11 @@ type HumanOTPEmailCheckSucceededEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPEmailCheckSucceededEvent) Data() interface{} {
+func (e *HumanOTPEmailCheckSucceededEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPEmailCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailCheckSucceededEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -579,11 +593,11 @@ type HumanOTPEmailCheckFailedEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanOTPEmailCheckFailedEvent) Data() interface{} {
+func (e *HumanOTPEmailCheckFailedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanOTPEmailCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanOTPEmailCheckFailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 

@@ -1,11 +1,8 @@
 import { COMMA, ENTER } from '@angular/cdk/keycodes';
 import { Component, ElementRef, EventEmitter, Input, OnDestroy, OnInit, Output, ViewChild } from '@angular/core';
 import { UntypedFormControl } from '@angular/forms';
-import {
-  MatLegacyAutocomplete as MatAutocomplete,
-  MatLegacyAutocompleteSelectedEvent as MatAutocompleteSelectedEvent,
-} from '@angular/material/legacy-autocomplete';
-import { MatLegacyChipInputEvent as MatChipInputEvent } from '@angular/material/legacy-chips';
+import { MatAutocomplete, MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
+import { MatChipInputEvent } from '@angular/material/chips';
 import { forkJoin, from, Subject } from 'rxjs';
 import { debounceTime, switchMap, takeUntil, tap } from 'rxjs/operators';
 import { ListProjectGrantsResponse, ListProjectsResponse } from 'src/app/proto/generated/zitadel/management_pb';
@@ -26,7 +23,6 @@ export enum ProjectAutocompleteType {
   styleUrls: ['./search-project-autocomplete.component.scss'],
 })
 export class SearchProjectAutocompleteComponent implements OnInit, OnDestroy {
-  public selectable: boolean = true;
   public removable: boolean = true;
   public addOnBlur: boolean = true;
   public separatorKeysCodes: number[] = [ENTER, COMMA];
@@ -41,13 +37,19 @@ export class SearchProjectAutocompleteComponent implements OnInit, OnDestroy {
   @Output() public selectionChanged: EventEmitter<{
     project: Project.AsObject | GrantedProject.AsObject;
     type: ProjectType;
+    name: string;
   }> = new EventEmitter();
+  @Output() public valueChanged: EventEmitter<string> = new EventEmitter();
 
   private unsubscribed$: Subject<void> = new Subject();
   constructor(private mgmtService: ManagementService) {
     this.myControl.valueChanges
       .pipe(
         takeUntil(this.unsubscribed$),
+        tap((value) => {
+          const name = typeof value === 'string' ? value : value.name ? value.name : '';
+          this.valueChanged.emit(name);
+        }),
         debounceTime(200),
         tap(() => (this.isLoading = true)),
         switchMap((value) => {
@@ -128,54 +130,25 @@ export class SearchProjectAutocompleteComponent implements OnInit, OnDestroy {
     return project && project.projectName ? `${project.projectName}` : project && project.name ? `${project.name}` : '';
   }
 
-  public add(event: MatChipInputEvent): void {
-    if (!this.matAutocomplete.isOpen) {
-      const input = event.chipInput?.inputElement;
-      const value = event.value;
-
-      if ((value || '').trim()) {
-        const index = this.filteredProjects.findIndex((project) => {
-          if (project?.projectName) {
-            return project.projectName === value;
-          } else if (project?.name) {
-            return project.name === value;
-          } else {
-            return false;
-          }
-        });
-        if (index > -1) {
-          if (this.projects && this.projects.length > 0) {
-            this.projects.push(this.filteredProjects[index]);
-          } else {
-            this.projects = [this.filteredProjects[index]];
-          }
-        }
-      }
-
-      if (input) {
-        input.value = '';
-      }
-    }
-  }
-
-  public remove(project: GrantedProject.AsObject): void {
-    const index = this.projects.indexOf(project);
-
-    if (index >= 0) {
-      this.projects.splice(index, 1);
-    }
-  }
-
   public selected(event: MatAutocompleteSelectedEvent): void {
     const p: Project.AsObject | GrantedProject.AsObject = event.option.value;
     const type = (p as Project.AsObject).id
       ? ProjectType.PROJECTTYPE_OWNED
       : (p as GrantedProject.AsObject).projectId
-      ? ProjectType.PROJECTTYPE_GRANTED
-      : ProjectType.PROJECTTYPE_OWNED;
+        ? ProjectType.PROJECTTYPE_GRANTED
+        : ProjectType.PROJECTTYPE_OWNED;
+
+    const name = (p as Project.AsObject).name
+      ? (p as Project.AsObject).name
+      : (p as GrantedProject.AsObject).projectName
+        ? (p as GrantedProject.AsObject).projectName
+        : '';
+
+    console.log(name);
 
     this.selectionChanged.emit({
       project: p,
+      name,
       type: type,
     });
   }

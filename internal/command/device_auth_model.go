@@ -3,6 +3,8 @@ package command
 import (
 	"time"
 
+	"golang.org/x/text/language"
+
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/deviceauth"
@@ -10,22 +12,32 @@ import (
 
 type DeviceAuthWriteModel struct {
 	eventstore.WriteModel
+	aggregate *eventstore.Aggregate
 
-	ClientID   string
-	DeviceCode string
-	UserCode   string
-	Expires    time.Time
-	Scopes     []string
-	Subject    string
-	State      domain.DeviceAuthState
+	ClientID          string
+	DeviceCode        string
+	UserCode          string
+	Expires           time.Time
+	Scopes            []string
+	Audience          []string
+	State             domain.DeviceAuthState
+	UserID            string
+	UserOrgID         string
+	UserAuthMethods   []domain.UserAuthMethodType
+	AuthTime          time.Time
+	PreferredLanguage *language.Tag
+	UserAgent         *domain.UserAgent
+	NeedRefreshToken  bool
+	SessionID         string
 }
 
-func NewDeviceAuthWriteModel(aggrID, resourceOwner string) *DeviceAuthWriteModel {
+func NewDeviceAuthWriteModel(deviceCode, resourceOwner string) *DeviceAuthWriteModel {
 	return &DeviceAuthWriteModel{
 		WriteModel: eventstore.WriteModel{
-			AggregateID:   aggrID,
+			AggregateID:   deviceCode,
 			ResourceOwner: resourceOwner,
 		},
+		aggregate: deviceauth.NewAggregate(deviceCode, resourceOwner),
 	}
 }
 
@@ -38,14 +50,22 @@ func (m *DeviceAuthWriteModel) Reduce() error {
 			m.UserCode = e.UserCode
 			m.Expires = e.Expires
 			m.Scopes = e.Scopes
+			m.Audience = e.Audience
 			m.State = e.State
+			m.NeedRefreshToken = e.NeedRefreshToken
 		case *deviceauth.ApprovedEvent:
-			m.Subject = e.Subject
 			m.State = domain.DeviceAuthStateApproved
+			m.UserID = e.UserID
+			m.UserOrgID = e.UserOrgID
+			m.UserAuthMethods = e.UserAuthMethods
+			m.AuthTime = e.AuthTime
+			m.PreferredLanguage = e.PreferredLanguage
+			m.UserAgent = e.UserAgent
+			m.SessionID = e.SessionID
 		case *deviceauth.CanceledEvent:
 			m.State = e.Reason.State()
-		case *deviceauth.RemovedEvent:
-			m.State = domain.DeviceAuthStateRemoved
+		case *deviceauth.DoneEvent:
+			m.State = domain.DeviceAuthStateDone
 		}
 	}
 
@@ -54,8 +74,14 @@ func (m *DeviceAuthWriteModel) Reduce() error {
 
 func (m *DeviceAuthWriteModel) Query() *eventstore.SearchQueryBuilder {
 	return eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
+		ResourceOwner(m.ResourceOwner).
 		AddQuery().
 		AggregateTypes(deviceauth.AggregateType).
 		AggregateIDs(m.AggregateID).
+		EventTypes(
+			deviceauth.AddedEventType,
+			deviceauth.ApprovedEventType,
+			deviceauth.CanceledEventType,
+		).
 		Builder()
 }

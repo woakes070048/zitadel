@@ -1,6 +1,6 @@
 import { Component, Injector, Input, OnInit, Type } from '@angular/core';
 import { UntypedFormGroup } from '@angular/forms';
-import { MatLegacyDialog as MatDialog } from '@angular/material/legacy-dialog';
+import { MatDialog } from '@angular/material/dialog';
 import { GetLockoutPolicyResponse as AdminGetPasswordLockoutPolicyResponse } from 'src/app/proto/generated/zitadel/admin_pb';
 import { GetLockoutPolicyResponse as MgmtGetPasswordLockoutPolicyResponse } from 'src/app/proto/generated/zitadel/management_pb';
 import { LockoutPolicy } from 'src/app/proto/generated/zitadel/policy_pb';
@@ -26,7 +26,11 @@ export class PasswordLockoutPolicyComponent implements OnInit {
   public PolicyComponentServiceType: any = PolicyComponentServiceType;
   public InfoSectionType: any = InfoSectionType;
 
-  constructor(private toast: ToastService, private injector: Injector, private dialog: MatDialog) {}
+  constructor(
+    private toast: ToastService,
+    private injector: Injector,
+    private dialog: MatDialog,
+  ) {}
 
   public ngOnInit(): void {
     switch (this.serviceType) {
@@ -87,15 +91,27 @@ export class PasswordLockoutPolicyComponent implements OnInit {
     }
   }
 
-  public incrementMaxAttempts(): void {
+  public incrementPasswordMaxAttempts(): void {
     if (this.lockoutData?.maxPasswordAttempts !== undefined) {
       this.lockoutData.maxPasswordAttempts++;
     }
   }
 
-  public decrementMaxAttempts(): void {
+  public decrementPasswordMaxAttempts(): void {
     if (this.lockoutData?.maxPasswordAttempts && this.lockoutData?.maxPasswordAttempts > 0) {
       this.lockoutData.maxPasswordAttempts--;
+    }
+  }
+
+  public incrementOTPMaxAttempts(): void {
+    if (this.lockoutData?.maxOtpAttempts !== undefined) {
+      this.lockoutData.maxOtpAttempts++;
+    }
+  }
+
+  public decrementOTPMaxAttempts(): void {
+    if (this.lockoutData?.maxOtpAttempts && this.lockoutData?.maxOtpAttempts > 0) {
+      this.lockoutData.maxOtpAttempts--;
     }
   }
 
@@ -104,7 +120,7 @@ export class PasswordLockoutPolicyComponent implements OnInit {
     if (this.lockoutData) {
       if (this.service instanceof AdminService) {
         promise = this.service
-          .updateLockoutPolicy(this.lockoutData.maxPasswordAttempts)
+          .updateLockoutPolicy(this.lockoutData.maxPasswordAttempts, this.lockoutData.maxOtpAttempts)
           .then(() => {
             this.toast.showInfo('POLICY.TOAST.SET', true);
             this.fetchData();
@@ -115,7 +131,7 @@ export class PasswordLockoutPolicyComponent implements OnInit {
       } else {
         if ((this.lockoutData as LockoutPolicy.AsObject).isDefault) {
           promise = (this.service as ManagementService)
-            .addCustomLockoutPolicy(this.lockoutData.maxPasswordAttempts)
+            .addCustomLockoutPolicy(this.lockoutData.maxPasswordAttempts, this.lockoutData.maxOtpAttempts)
             .then(() => {
               this.toast.showInfo('POLICY.TOAST.SET', true);
               this.fetchData();
@@ -125,7 +141,7 @@ export class PasswordLockoutPolicyComponent implements OnInit {
             });
         } else {
           promise = (this.service as ManagementService)
-            .updateCustomLockoutPolicy(this.lockoutData.maxPasswordAttempts)
+            .updateCustomLockoutPolicy(this.lockoutData.maxPasswordAttempts, this.lockoutData.maxOtpAttempts)
             .then(() => {
               this.toast.showInfo('POLICY.TOAST.SET', true);
               this.fetchData();

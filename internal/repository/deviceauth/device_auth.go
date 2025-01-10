@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"golang.org/x/text/language"
+
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
 )
@@ -13,30 +15,32 @@ const (
 	AddedEventType                         = eventTypePrefix + "added"
 	ApprovedEventType                      = eventTypePrefix + "approved"
 	CanceledEventType                      = eventTypePrefix + "canceled"
-	RemovedEventType                       = eventTypePrefix + "removed"
+	DoneEventType                          = eventTypePrefix + "done"
 )
 
 type AddedEvent struct {
-	*eventstore.BaseEvent
+	*eventstore.BaseEvent `json:"-"`
 
-	ClientID   string
-	DeviceCode string
-	UserCode   string
-	Expires    time.Time
-	Scopes     []string
-	State      domain.DeviceAuthState
+	ClientID         string
+	DeviceCode       string
+	UserCode         string
+	Expires          time.Time
+	Scopes           []string
+	Audience         []string
+	State            domain.DeviceAuthState
+	NeedRefreshToken bool
 }
 
 func (e *AddedEvent) SetBaseEvent(b *eventstore.BaseEvent) {
 	e.BaseEvent = b
 }
 
-func (e *AddedEvent) Data() any {
+func (e *AddedEvent) Payload() any {
 	return e
 }
 
-func (e *AddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return NewAddUniqueConstraints(e.ClientID, e.DeviceCode, e.UserCode)
+func (e *AddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return NewAddUniqueConstraints(e.DeviceCode, e.UserCode)
 }
 
 func NewAddedEvent(
@@ -47,47 +51,70 @@ func NewAddedEvent(
 	userCode string,
 	expires time.Time,
 	scopes []string,
+	audience []string,
+	needRefreshToken bool,
 ) *AddedEvent {
 	return &AddedEvent{
 		eventstore.NewBaseEventForPush(
 			ctx, aggregate, AddedEventType,
 		),
-		clientID, deviceCode, userCode, expires, scopes, domain.DeviceAuthStateInitiated}
+		clientID, deviceCode, userCode, expires, scopes, audience,
+		domain.DeviceAuthStateInitiated, needRefreshToken,
+	}
 }
 
 type ApprovedEvent struct {
-	*eventstore.BaseEvent
+	*eventstore.BaseEvent `json:"-"`
 
-	Subject string
+	UserID            string
+	UserOrgID         string
+	UserAuthMethods   []domain.UserAuthMethodType
+	AuthTime          time.Time
+	PreferredLanguage *language.Tag
+	UserAgent         *domain.UserAgent
+	SessionID         string
 }
 
 func (e *ApprovedEvent) SetBaseEvent(b *eventstore.BaseEvent) {
 	e.BaseEvent = b
 }
 
-func (e *ApprovedEvent) Data() any {
+func (e *ApprovedEvent) Payload() any {
 	return e
 }
 
-func (e *ApprovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *ApprovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
 func NewApprovedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
-	subject string,
+	userID,
+	userOrgID string,
+	userAuthMethods []domain.UserAuthMethodType,
+	authTime time.Time,
+	preferredLanguage *language.Tag,
+	userAgent *domain.UserAgent,
+	sessionID string,
 ) *ApprovedEvent {
 	return &ApprovedEvent{
-		eventstore.NewBaseEventForPush(
+		BaseEvent: eventstore.NewBaseEventForPush(
 			ctx, aggregate, ApprovedEventType,
 		),
-		subject,
+		UserID:            userID,
+		UserOrgID:         userOrgID,
+		UserAuthMethods:   userAuthMethods,
+		AuthTime:          authTime,
+		PreferredLanguage: preferredLanguage,
+		UserAgent:         userAgent,
+		SessionID:         sessionID,
 	}
 }
 
 type CanceledEvent struct {
-	*eventstore.BaseEvent
+	*eventstore.BaseEvent `json:"-"`
+
 	Reason domain.DeviceAuthCanceled
 }
 
@@ -95,11 +122,11 @@ func (e *CanceledEvent) SetBaseEvent(b *eventstore.BaseEvent) {
 	e.BaseEvent = b
 }
 
-func (e *CanceledEvent) Data() any {
+func (e *CanceledEvent) Payload() any {
 	return e
 }
 
-func (e *CanceledEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *CanceledEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -107,35 +134,22 @@ func NewCanceledEvent(ctx context.Context, aggregate *eventstore.Aggregate, reas
 	return &CanceledEvent{eventstore.NewBaseEventForPush(ctx, aggregate, CanceledEventType), reason}
 }
 
-type RemovedEvent struct {
-	*eventstore.BaseEvent
-
-	ClientID   string
-	DeviceCode string
-	UserCode   string
+type DoneEvent struct {
+	*eventstore.BaseEvent `json:"-"`
 }
 
-func (e *RemovedEvent) SetBaseEvent(b *eventstore.BaseEvent) {
+func (e *DoneEvent) SetBaseEvent(b *eventstore.BaseEvent) {
 	e.BaseEvent = b
 }
 
-func (e *RemovedEvent) Data() any {
+func (e *DoneEvent) Payload() any {
 	return e
 }
 
-func (e *RemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return NewRemoveUniqueConstraints(e.ClientID, e.DeviceCode, e.UserCode)
+func (e *DoneEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return nil
 }
 
-func NewRemovedEvent(
-	ctx context.Context,
-	aggregate *eventstore.Aggregate,
-	clientID, deviceCode, userCode string,
-) *RemovedEvent {
-	return &RemovedEvent{
-		eventstore.NewBaseEventForPush(
-			ctx, aggregate, RemovedEventType,
-		),
-		clientID, deviceCode, userCode,
-	}
+func NewDoneEvent(ctx context.Context, aggregate *eventstore.Aggregate) *DoneEvent {
+	return &DoneEvent{eventstore.NewBaseEventForPush(ctx, aggregate, DoneEventType)}
 }

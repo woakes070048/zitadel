@@ -1,4 +1,4 @@
-<h1 class="title">
+<h1 mat-dialog-title class="title">
   <span>{{ data.title | translate }}</span>
 </h1>
 <div mat-dialog-content>
@@ -12,8 +12,8 @@
           (data.componentType === LoginMethodComponentType.SecondFactor
             ? 'MFA.SECONDFACTORTYPES.'
             : LoginMethodComponentType.MultiFactor
-            ? 'MFA.MULTIFACTORTYPES.'
-            : '') + mfa | translate
+              ? 'MFA.MULTIFACTORTYPES.'
+              : '') + mfa | translate
         }}
       </mat-option>
     </mat-select>

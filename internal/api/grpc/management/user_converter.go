@@ -7,24 +7,22 @@ import (
 	"github.com/zitadel/logging"
 	"golang.org/x/text/language"
 
-	"github.com/zitadel/zitadel/internal/command"
-	"github.com/zitadel/zitadel/pkg/grpc/user"
-
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/grpc/authn"
 	"github.com/zitadel/zitadel/internal/api/grpc/metadata"
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
 	user_grpc "github.com/zitadel/zitadel/internal/api/grpc/user"
+	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/query"
-	user_model "github.com/zitadel/zitadel/internal/user/model"
 	mgmt_pb "github.com/zitadel/zitadel/pkg/grpc/management"
+	"github.com/zitadel/zitadel/pkg/grpc/user"
 )
 
 func ListUsersRequestToModel(req *mgmt_pb.ListUsersRequest) (*query.UserSearchQueries, error) {
 	offset, limit, asc := object.ListQueryToModel(req.Query)
-	queries, err := user_grpc.UserQueriesToQuery(req.Queries)
+	queries, err := user_grpc.UserQueriesToQuery(req.Queries, 0 /*start from level 0*/)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +75,7 @@ func BulkSetUserMetadataToDomain(req *mgmt_pb.BulkSetUserMetadataRequest) []*dom
 
 func ListUserMetadataToDomain(req *mgmt_pb.ListUserMetadataRequest) (*query.UserMetadataSearchQueries, error) {
 	offset, limit, asc := object.ListQueryToModel(req.Query)
-	queries, err := metadata.MetadataQueriesToQuery(req.Queries)
+	queries, err := metadata.UserMetadataQueriesToQuery(req.Queries)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +133,14 @@ func ImportHumanUserRequestToDomain(req *mgmt_pb.ImportHumanUserRequest) (human 
 }
 
 func AddMachineUserRequestToCommand(req *mgmt_pb.AddMachineUserRequest, resourceowner string) *command.Machine {
+	userId := ""
+	if req.UserId != nil {
+		userId = *req.UserId
+	}
+
 	return &command.Machine{
 		ObjectRoot: models.ObjectRoot{
+			AggregateID:   userId,
 			ResourceOwner: resourceowner,
 		},
 		Username:        req.UserName,
@@ -239,6 +243,7 @@ func AddMachineKeyRequestToCommand(req *mgmt_pb.AddMachineKeyRequest, resourceOw
 		},
 		ExpirationDate: expDate,
 		Type:           authn.KeyTypeToDomain(req.Type),
+		PublicKey:      req.PublicKey,
 	}
 }
 
@@ -358,39 +363,4 @@ func ListUserMembershipsRequestToModel(ctx context.Context, req *mgmt_pb.ListUse
 		//SortingColumn: //TODO: sorting
 		Queries: queries,
 	}, nil
-}
-
-func UserMembershipViewsToDomain(memberships []*user_model.UserMembershipView) []*domain.UserMembership {
-	result := make([]*domain.UserMembership, len(memberships))
-	for i, membership := range memberships {
-		result[i] = &domain.UserMembership{
-			UserID:            membership.UserID,
-			MemberType:        MemberTypeToDomain(membership.MemberType),
-			AggregateID:       membership.AggregateID,
-			ObjectID:          membership.ObjectID,
-			Roles:             membership.Roles,
-			DisplayName:       membership.DisplayName,
-			CreationDate:      membership.CreationDate,
-			ChangeDate:        membership.ChangeDate,
-			ResourceOwner:     membership.ResourceOwner,
-			ResourceOwnerName: membership.ResourceOwnerName,
-			Sequence:          membership.Sequence,
-		}
-	}
-	return result
-}
-
-func MemberTypeToDomain(mType user_model.MemberType) domain.MemberType {
-	switch mType {
-	case user_model.MemberTypeIam:
-		return domain.MemberTypeIam
-	case user_model.MemberTypeOrganisation:
-		return domain.MemberTypeOrganisation
-	case user_model.MemberTypeProject:
-		return domain.MemberTypeProject
-	case user_model.MemberTypeProjectGrant:
-		return domain.MemberTypeProjectGrant
-	default:
-		return domain.MemberTypeUnspecified
-	}
 }

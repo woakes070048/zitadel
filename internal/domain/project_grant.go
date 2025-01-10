@@ -11,11 +11,6 @@ type ProjectGrant struct {
 	RoleKeys     []string
 }
 
-type ProjectGrantIDs struct {
-	ProjectID string
-	GrantID   string
-}
-
 type ProjectGrantState int32
 
 const (
@@ -23,7 +18,13 @@ const (
 	ProjectGrantStateActive
 	ProjectGrantStateInactive
 	ProjectGrantStateRemoved
+
+	projectGrantStateMax
 )
+
+func (s ProjectGrantState) Valid() bool {
+	return s > ProjectGrantStateUnspecified && s < projectGrantStateMax
+}
 
 func (p *ProjectGrant) IsValid() bool {
 	return p.GrantedOrgID != ""

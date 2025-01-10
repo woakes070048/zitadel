@@ -2,31 +2,33 @@ package project
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
-	OIDCConfigAddedType                = applicationEventTypePrefix + "config.oidc.added"
-	OIDCConfigChangedType              = applicationEventTypePrefix + "config.oidc.changed"
-	OIDCConfigSecretChangedType        = applicationEventTypePrefix + "config.oidc.secret.changed"
-	OIDCClientSecretCheckSucceededType = applicationEventTypePrefix + "oidc.secret.check.succeeded"
-	OIDCClientSecretCheckFailedType    = applicationEventTypePrefix + "oidc.secret.check.failed"
+	OIDCConfigAddedType             = applicationEventTypePrefix + "config.oidc.added"
+	OIDCConfigChangedType           = applicationEventTypePrefix + "config.oidc.changed"
+	OIDCConfigSecretChangedType     = applicationEventTypePrefix + "config.oidc.secret.changed"
+	OIDCConfigSecretHashUpdatedType = applicationEventTypePrefix + "config.oidc.secret.updated"
 )
 
 type OIDCConfigAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Version                  domain.OIDCVersion         `json:"oidcVersion,omitempty"`
-	AppID                    string                     `json:"appId"`
-	ClientID                 string                     `json:"clientId,omitempty"`
-	ClientSecret             *crypto.CryptoValue        `json:"clientSecret,omitempty"`
+	Version  domain.OIDCVersion `json:"oidcVersion,omitempty"`
+	AppID    string             `json:"appId"`
+	ClientID string             `json:"clientId,omitempty"`
+
+	// New events only use EncodedHash. However, the ClientSecret field
+	// is preserved to handle events older than the switch to Passwap.
+	ClientSecret *crypto.CryptoValue `json:"clientSecret,omitempty"`
+	HashedSecret string              `json:"hashedSecret,omitempty"`
+
 	RedirectUris             []string                   `json:"redirectUris,omitempty"`
 	ResponseTypes            []domain.OIDCResponseType  `json:"responseTypes,omitempty"`
 	GrantTypes               []domain.OIDCGrantType     `json:"grantTypes,omitempty"`
@@ -41,13 +43,16 @@ type OIDCConfigAddedEvent struct {
 	ClockSkew                time.Duration              `json:"clockSkew,omitempty"`
 	AdditionalOrigins        []string                   `json:"additionalOrigins,omitempty"`
 	SkipNativeAppSuccessPage bool                       `json:"skipNativeAppSuccessPage,omitempty"`
+	BackChannelLogoutURI     string                     `json:"backChannelLogoutURI,omitempty"`
+	LoginVersion             domain.LoginVersion        `json:"loginVersion,omitempty"`
+	LoginBaseURI             string                     `json:"loginBaseURI,omitempty"`
 }
 
-func (e *OIDCConfigAddedEvent) Data() interface{} {
+func (e *OIDCConfigAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *OIDCConfigAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *OIDCConfigAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -57,7 +62,7 @@ func NewOIDCConfigAddedEvent(
 	version domain.OIDCVersion,
 	appID string,
 	clientID string,
-	clientSecret *crypto.CryptoValue,
+	hashedSecret string,
 	redirectUris []string,
 	responseTypes []domain.OIDCResponseType,
 	grantTypes []domain.OIDCGrantType,
@@ -72,6 +77,9 @@ func NewOIDCConfigAddedEvent(
 	clockSkew time.Duration,
 	additionalOrigins []string,
 	skipNativeAppSuccessPage bool,
+	backChannelLogoutURI string,
+	loginVersion domain.LoginVersion,
+	loginBaseURI string,
 ) *OIDCConfigAddedEvent {
 	return &OIDCConfigAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -82,7 +90,7 @@ func NewOIDCConfigAddedEvent(
 		Version:                  version,
 		AppID:                    appID,
 		ClientID:                 clientID,
-		ClientSecret:             clientSecret,
+		HashedSecret:             hashedSecret,
 		RedirectUris:             redirectUris,
 		ResponseTypes:            responseTypes,
 		GrantTypes:               grantTypes,
@@ -97,6 +105,9 @@ func NewOIDCConfigAddedEvent(
 		ClockSkew:                clockSkew,
 		AdditionalOrigins:        additionalOrigins,
 		SkipNativeAppSuccessPage: skipNativeAppSuccessPage,
+		BackChannelLogoutURI:     backChannelLogoutURI,
+		LoginVersion:             loginVersion,
+		LoginBaseURI:             loginBaseURI,
 	}
 }
 
@@ -182,17 +193,26 @@ func (e *OIDCConfigAddedEvent) Validate(cmd eventstore.Command) bool {
 			return false
 		}
 	}
-	return e.SkipNativeAppSuccessPage == c.SkipNativeAppSuccessPage
+	if e.SkipNativeAppSuccessPage != c.SkipNativeAppSuccessPage {
+		return false
+	}
+	if e.BackChannelLogoutURI != c.BackChannelLogoutURI {
+		return false
+	}
+	if e.LoginVersion != c.LoginVersion {
+		return false
+	}
+	return e.LoginBaseURI == c.LoginBaseURI
 }
 
-func OIDCConfigAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func OIDCConfigAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &OIDCConfigAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "OIDC-BFd15", "unable to unmarshal oidc config")
+		return nil, zerrors.ThrowInternal(err, "OIDC-BFd15", "unable to unmarshal oidc config")
 	}
 
 	return e, nil
@@ -217,13 +237,16 @@ type OIDCConfigChangedEvent struct {
 	ClockSkew                *time.Duration              `json:"clockSkew,omitempty"`
 	AdditionalOrigins        *[]string                   `json:"additionalOrigins,omitempty"`
 	SkipNativeAppSuccessPage *bool                       `json:"skipNativeAppSuccessPage,omitempty"`
+	BackChannelLogoutURI     *string                     `json:"backChannelLogoutURI,omitempty"`
+	LoginVersion             *domain.LoginVersion        `json:"loginVersion,omitempty"`
+	LoginBaseURI             *string                     `json:"loginBaseURI,omitempty"`
 }
 
-func (e *OIDCConfigChangedEvent) Data() interface{} {
+func (e *OIDCConfigChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *OIDCConfigChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *OIDCConfigChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -234,7 +257,7 @@ func NewOIDCConfigChangedEvent(
 	changes []OIDCConfigChanges,
 ) (*OIDCConfigChangedEvent, error) {
 	if len(changes) == 0 {
-		return nil, errors.ThrowPreconditionFailed(nil, "OIDC-i8idç", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "OIDC-i8idç", "Errors.NoChangesFound")
 	}
 
 	changeEvent := &OIDCConfigChangedEvent{
@@ -343,14 +366,32 @@ func ChangeSkipNativeAppSuccessPage(skipNativeAppSuccessPage bool) func(event *O
 	}
 }
 
-func OIDCConfigChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func ChangeBackChannelLogoutURI(backChannelLogoutURI string) func(event *OIDCConfigChangedEvent) {
+	return func(e *OIDCConfigChangedEvent) {
+		e.BackChannelLogoutURI = &backChannelLogoutURI
+	}
+}
+
+func ChangeLoginVersion(loginVersion domain.LoginVersion) func(event *OIDCConfigChangedEvent) {
+	return func(e *OIDCConfigChangedEvent) {
+		e.LoginVersion = &loginVersion
+	}
+}
+
+func ChangeLoginBaseURI(loginBaseURI string) func(event *OIDCConfigChangedEvent) {
+	return func(e *OIDCConfigChangedEvent) {
+		e.LoginBaseURI = &loginBaseURI
+	}
+}
+
+func OIDCConfigChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &OIDCConfigChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "OIDC-BFd15", "unable to unmarshal oidc config")
+		return nil, zerrors.ThrowInternal(err, "OIDC-BFd15", "unable to unmarshal oidc config")
 	}
 
 	return e, nil
@@ -359,15 +400,19 @@ func OIDCConfigChangedEventMapper(event *repository.Event) (eventstore.Event, er
 type OIDCConfigSecretChangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	AppID        string              `json:"appId"`
+	AppID string `json:"appId"`
+
+	// New events only use EncodedHash. However, the ClientSecret field
+	// is preserved to handle events older than the switch to Passwap.
 	ClientSecret *crypto.CryptoValue `json:"clientSecret,omitempty"`
+	HashedSecret string              `json:"hashedSecret,omitempty"`
 }
 
-func (e *OIDCConfigSecretChangedEvent) Data() interface{} {
+func (e *OIDCConfigSecretChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *OIDCConfigSecretChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *OIDCConfigSecretChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -375,7 +420,7 @@ func NewOIDCConfigSecretChangedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	appID string,
-	clientSecret *crypto.CryptoValue,
+	hashedSecret string,
 ) *OIDCConfigSecretChangedEvent {
 	return &OIDCConfigSecretChangedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -384,103 +429,55 @@ func NewOIDCConfigSecretChangedEvent(
 			OIDCConfigSecretChangedType,
 		),
 		AppID:        appID,
-		ClientSecret: clientSecret,
+		HashedSecret: hashedSecret,
 	}
 }
 
-func OIDCConfigSecretChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func OIDCConfigSecretChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &OIDCConfigSecretChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "OIDC-M893d", "unable to unmarshal oidc config")
+		return nil, zerrors.ThrowInternal(err, "OIDC-M893d", "unable to unmarshal oidc config")
 	}
 
 	return e, nil
 }
 
-type OIDCConfigSecretCheckSucceededEvent struct {
-	eventstore.BaseEvent `json:"-"`
+type OIDCConfigSecretHashUpdatedEvent struct {
+	*eventstore.BaseEvent `json:"-"`
 
-	AppID string `json:"appId"`
+	AppID        string `json:"appId"`
+	HashedSecret string `json:"hashedSecret,omitempty"`
 }
 
-func (e *OIDCConfigSecretCheckSucceededEvent) Data() interface{} {
-	return e
-}
-
-func (e *OIDCConfigSecretCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return nil
-}
-
-func NewOIDCConfigSecretCheckSucceededEvent(
+func NewOIDCConfigSecretHashUpdatedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	appID string,
-) *OIDCConfigSecretCheckSucceededEvent {
-	return &OIDCConfigSecretCheckSucceededEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
+	hashedSecret string,
+) *OIDCConfigSecretHashUpdatedEvent {
+	return &OIDCConfigSecretHashUpdatedEvent{
+		BaseEvent: eventstore.NewBaseEventForPush(
 			ctx,
 			aggregate,
-			OIDCClientSecretCheckSucceededType,
+			OIDCConfigSecretHashUpdatedType,
 		),
-		AppID: appID,
+		AppID:        appID,
+		HashedSecret: hashedSecret,
 	}
 }
 
-func OIDCConfigSecretCheckSucceededEventMapper(event *repository.Event) (eventstore.Event, error) {
-	e := &OIDCConfigSecretCheckSucceededEvent{
-		BaseEvent: *eventstore.BaseEventFromRepo(event),
-	}
-
-	err := json.Unmarshal(event.Data, e)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "OIDC-837gV", "unable to unmarshal oidc config")
-	}
-
-	return e, nil
+func (e *OIDCConfigSecretHashUpdatedEvent) SetBaseEvent(b *eventstore.BaseEvent) {
+	e.BaseEvent = b
 }
 
-type OIDCConfigSecretCheckFailedEvent struct {
-	eventstore.BaseEvent `json:"-"`
-
-	AppID string `json:"appId"`
-}
-
-func (e *OIDCConfigSecretCheckFailedEvent) Data() interface{} {
+func (e *OIDCConfigSecretHashUpdatedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *OIDCConfigSecretCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *OIDCConfigSecretHashUpdatedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
-}
-
-func NewOIDCConfigSecretCheckFailedEvent(
-	ctx context.Context,
-	aggregate *eventstore.Aggregate,
-	appID string,
-) *OIDCConfigSecretCheckFailedEvent {
-	return &OIDCConfigSecretCheckFailedEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
-			ctx,
-			aggregate,
-			OIDCClientSecretCheckFailedType,
-		),
-		AppID: appID,
-	}
-}
-
-func OIDCConfigSecretCheckFailedEventMapper(event *repository.Event) (eventstore.Event, error) {
-	e := &OIDCConfigSecretCheckFailedEvent{
-		BaseEvent: *eventstore.BaseEventFromRepo(event),
-	}
-
-	err := json.Unmarshal(event.Data, e)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "OIDC-987g%", "unable to unmarshal oidc config")
-	}
-
-	return e, nil
 }

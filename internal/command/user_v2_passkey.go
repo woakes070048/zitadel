@@ -6,19 +6,18 @@ import (
 
 	"github.com/zitadel/logging"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 // RegisterUserPasskey creates a passkey registration for the current authenticated user.
 // UserID, usually taken from the request is compared against the user ID in the context.
 func (c *Commands) RegisterUserPasskey(ctx context.Context, userID, resourceOwner, rpID string, authenticator domain.AuthenticatorAttachment) (*domain.WebAuthNRegistrationDetails, error) {
-	if err := authz.UserIDInCTX(ctx, userID); err != nil {
+	if err := c.checkPermissionUpdateUserCredentials(ctx, resourceOwner, userID); err != nil {
 		return nil, err
 	}
 	return c.registerUserPasskey(ctx, userID, resourceOwner, rpID, authenticator)
@@ -48,10 +47,10 @@ func (c *Commands) verifyUserPasskeyCode(ctx context.Context, userID, resourceOw
 	if err != nil {
 		return nil, err
 	}
-	err = verifyCryptoCode(ctx, c.eventstore.Filter, domain.SecretGeneratorTypePasswordlessInitCode, alg, wm.ChangeDate, wm.Expiration, wm.CryptoCode, code)
+	err = crypto.VerifyCode(wm.ChangeDate, wm.Expiration, wm.CryptoCode, code, alg)
 	if err != nil || wm.State != domain.PasswordlessInitCodeStateActive {
 		c.verifyUserPasskeyCodeFailed(ctx, wm)
-		return nil, caos_errs.ThrowInvalidArgument(err, "COMMAND-Eeb2a", "Errors.User.Code.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(err, "COMMAND-Eeb2a", "Errors.User.Code.Invalid")
 	}
 	return func(ctx context.Context, userAgg *eventstore.Aggregate) eventstore.Command {
 		return user.NewHumanPasswordlessInitCodeCheckSucceededEvent(ctx, userAgg, codeID)
@@ -156,6 +155,6 @@ func (c *Commands) addUserPasskeyCode(ctx context.Context, userID, resourceOwner
 	}, nil
 }
 
-func (c *Commands) newPasskeyCode(ctx context.Context, filter preparation.FilterToQueryReducer, alg crypto.EncryptionAlgorithm) (*CryptoCode, error) {
-	return c.newCode(ctx, filter, domain.SecretGeneratorTypePasswordlessInitCode, alg)
+func (c *Commands) newPasskeyCode(ctx context.Context, filter preparation.FilterToQueryReducer, alg crypto.EncryptionAlgorithm) (*EncryptedCode, error) {
+	return c.newEncryptedCode(ctx, filter, domain.SecretGeneratorTypePasswordlessInitCode, alg)
 }

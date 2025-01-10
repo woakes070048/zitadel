@@ -3,17 +3,23 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
+	"slices"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	domain_pkg "github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	"github.com/zitadel/zitadel/internal/feature"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/v2/eventstore"
+	"github.com/zitadel/zitadel/internal/v2/readmodel"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -50,8 +56,9 @@ var (
 		table: orgsTable,
 	}
 	OrgColumnName = Column{
-		name:  projection.OrgColumnName,
-		table: orgsTable,
+		name:           projection.OrgColumnName,
+		table:          orgsTable,
+		isOrderByLower: true,
 	}
 	OrgColumnDomain = Column{
 		name:  projection.OrgColumnDomain,
@@ -76,6 +83,17 @@ type Org struct {
 	Domain string
 }
 
+func orgsCheckPermission(ctx context.Context, orgs *Orgs, permissionCheck domain_pkg.PermissionCheck) {
+	orgs.Orgs = slices.DeleteFunc(orgs.Orgs,
+		func(org *Org) bool {
+			if err := permissionCheck(ctx, domain_pkg.PermissionOrgRead, org.ID, org.ID); err != nil {
+				return true
+			}
+			return false
+		},
+	)
+}
+
 type OrgSearchQueries struct {
 	SearchRequest
 	Queries []SearchQuery
@@ -93,8 +111,57 @@ func (q *Queries) OrgByID(ctx context.Context, shouldTriggerBulk bool, id string
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
+	if org, ok := q.caches.org.Get(ctx, orgIndexByID, id); ok {
+		return org, nil
+	}
+	defer func() {
+		if err == nil && org != nil {
+			q.caches.org.Set(ctx, org)
+		}
+	}()
+
+	if !authz.GetInstance(ctx).Features().ShouldUseImprovedPerformance(feature.ImprovedPerformanceTypeOrgByID) {
+		return q.oldOrgByID(ctx, shouldTriggerBulk, id)
+	}
+
+	foundOrg := readmodel.NewOrg(id)
+	eventCount, err := q.eventStoreV4.Query(
+		ctx,
+		eventstore.NewQuery(
+			authz.GetInstance(ctx).InstanceID(),
+			foundOrg,
+			eventstore.AppendFilters(foundOrg.Filter()...),
+		),
+	)
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-AWx52", "Errors.Query.SQLStatement")
+	}
+
+	if eventCount == 0 {
+		return nil, zerrors.ThrowNotFound(nil, "QUERY-leq5Q", "Errors.Org.NotFound")
+	}
+
+	return &Org{
+		ID:            foundOrg.ID,
+		CreationDate:  foundOrg.CreationDate,
+		ChangeDate:    foundOrg.ChangeDate,
+		ResourceOwner: foundOrg.Owner,
+		State:         domain_pkg.OrgState(foundOrg.State.State),
+		Sequence:      uint64(foundOrg.Sequence),
+		Name:          foundOrg.Name,
+		Domain:        foundOrg.PrimaryDomain.Domain,
+	}, nil
+}
+
+func (q *Queries) oldOrgByID(ctx context.Context, shouldTriggerBulk bool, id string) (org *Org, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		ctx = projection.OrgProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerOrgProjection")
+		ctx, err = projection.OrgProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
 	stmt, scan := prepareOrgQuery(ctx, q.client)
@@ -103,7 +170,7 @@ func (q *Queries) OrgByID(ctx context.Context, shouldTriggerBulk bool, id string
 		OrgColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-AWx52", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-AWx52", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -117,6 +184,11 @@ func (q *Queries) OrgByPrimaryDomain(ctx context.Context, domain string) (org *O
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
+	org, ok := q.caches.org.Get(ctx, orgIndexByPrimaryDomain, domain)
+	if ok {
+		return org, nil
+	}
+
 	stmt, scan := prepareOrgQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		OrgColumnDomain.identifier():     domain,
@@ -124,13 +196,16 @@ func (q *Queries) OrgByPrimaryDomain(ctx context.Context, domain string) (org *O
 		OrgColumnState.identifier():      domain_pkg.OrgStateActive,
 	}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-TYUCE", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-TYUCE", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
 		org, err = scan(row)
 		return err
 	}, query, args...)
+	if err == nil {
+		q.caches.org.Set(ctx, org)
+	}
 	return org, err
 }
 
@@ -145,7 +220,7 @@ func (q *Queries) OrgByVerifiedDomain(ctx context.Context, domain string) (org *
 		OrgColumnInstanceID.identifier():    authz.GetInstance(ctx).InstanceID(),
 	}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-TYUCE", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-TYUCE", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -160,7 +235,7 @@ func (q *Queries) IsOrgUnique(ctx context.Context, name, domain string) (isUniqu
 	defer func() { span.EndWithError(err) }()
 
 	if name == "" && domain == "" {
-		return false, errors.ThrowInvalidArgument(nil, "QUERY-DGqfd", "Errors.Query.InvalidRequest")
+		return false, zerrors.ThrowInvalidArgument(nil, "QUERY-DGqfd", "Errors.Query.InvalidRequest")
 	}
 	query, scan := prepareOrgUniqueQuery(ctx, q.client)
 	stmt, args, err := query.Where(
@@ -182,7 +257,7 @@ func (q *Queries) IsOrgUnique(ctx context.Context, name, domain string) (isUniqu
 			},
 		}).ToSql()
 	if err != nil {
-		return false, errors.ThrowInternal(err, "QUERY-Dgbe2", "Errors.Query.SQLStatement")
+		return false, zerrors.ThrowInternal(err, "QUERY-Dgbe2", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -208,7 +283,18 @@ func (q *Queries) ExistsOrg(ctx context.Context, id, domain string) (verifiedID 
 	return org.ID, nil
 }
 
-func (q *Queries) SearchOrgs(ctx context.Context, queries *OrgSearchQueries) (orgs *Orgs, err error) {
+func (q *Queries) SearchOrgs(ctx context.Context, queries *OrgSearchQueries, permissionCheck domain_pkg.PermissionCheck) (*Orgs, error) {
+	orgs, err := q.searchOrgs(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	if permissionCheck != nil {
+		orgsCheckPermission(ctx, orgs, permissionCheck)
+	}
+	return orgs, nil
+}
+
+func (q *Queries) searchOrgs(ctx context.Context, queries *OrgSearchQueries) (orgs *Orgs, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
@@ -220,7 +306,7 @@ func (q *Queries) SearchOrgs(ctx context.Context, queries *OrgSearchQueries) (or
 			},
 		}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-wQ3by", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-wQ3by", "Errors.Query.InvalidRequest")
 	}
 
 	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
@@ -228,15 +314,35 @@ func (q *Queries) SearchOrgs(ctx context.Context, queries *OrgSearchQueries) (or
 		return err
 	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-M6mYN", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-M6mYN", "Errors.Internal")
 	}
 
-	orgs.LatestSequence, err = q.latestSequence(ctx, orgsTable)
+	orgs.State, err = q.latestState(ctx, orgsTable)
 	return orgs, err
 }
 
-func NewOrgDomainSearchQuery(method TextComparison, value string) (SearchQuery, error) {
-	return NewTextQuery(OrgColumnDomain, value, method)
+func NewOrgIDSearchQuery(value string) (SearchQuery, error) {
+	return NewTextQuery(OrgColumnID, value, TextEquals)
+}
+
+func NewOrgVerifiedDomainSearchQuery(method TextComparison, value string) (SearchQuery, error) {
+	domainQuery, err := NewTextQuery(OrgDomainDomainCol, value, method)
+	if err != nil {
+		return nil, err
+	}
+	verifiedQuery, err := NewBoolQuery(OrgDomainIsVerifiedCol, true)
+	if err != nil {
+		return nil, err
+	}
+	subSelect, err := NewSubSelect(OrgDomainOrgIDCol, []SearchQuery{domainQuery, verifiedQuery})
+	if err != nil {
+		return nil, err
+	}
+	return NewListQuery(
+		OrgColumnID,
+		subSelect,
+		ListIn,
+	)
 }
 
 func NewOrgNameSearchQuery(method TextComparison, value string) (SearchQuery, error) {
@@ -291,7 +397,7 @@ func prepareOrgsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-QMXJv", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-QMXJv", "Errors.Query.CloseRows")
 			}
 
 			return &Orgs{
@@ -329,10 +435,10 @@ func prepareOrgQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder,
 				&o.Domain,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-iTTGJ", "Errors.Org.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-iTTGJ", "Errors.Org.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-pWS5H", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-pWS5H", "Errors.Internal")
 			}
 			return o, nil
 		}
@@ -365,10 +471,10 @@ func prepareOrgWithDomainsQuery(ctx context.Context, db prepareDatabase) (sq.Sel
 				&o.Domain,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-iTTGJ", "Errors.Org.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-iTTGJ", "Errors.Org.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-pWS5H", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-pWS5H", "Errors.Internal")
 			}
 			return o, nil
 		}
@@ -382,8 +488,35 @@ func prepareOrgUniqueQuery(ctx context.Context, db prepareDatabase) (sq.SelectBu
 		func(row *sql.Row) (isUnique bool, err error) {
 			err = row.Scan(&isUnique)
 			if err != nil {
-				return false, errors.ThrowInternal(err, "QUERY-e6EiG", "Errors.Internal")
+				return false, zerrors.ThrowInternal(err, "QUERY-e6EiG", "Errors.Internal")
 			}
 			return isUnique, err
 		}
+}
+
+type orgIndex int
+
+//go:generate enumer -type orgIndex -linecomment
+const (
+	// Empty line comment ensures empty string for unspecified value
+	orgIndexUnspecified orgIndex = iota //
+	orgIndexByID
+	orgIndexByPrimaryDomain
+)
+
+// Keys implements [cache.Entry]
+func (o *Org) Keys(index orgIndex) []string {
+	switch index {
+	case orgIndexByID:
+		return []string{o.ID}
+	case orgIndexByPrimaryDomain:
+		return []string{o.Domain}
+	case orgIndexUnspecified:
+	}
+	return nil
+}
+
+func (c *Caches) registerOrgInvalidation() {
+	invalidate := cacheInvalidationFunc(c.org, orgIndexByID, getAggregateID)
+	projection.OrgProjection.RegisterCacheInvalidation(invalidate)
 }

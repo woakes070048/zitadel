@@ -2,13 +2,11 @@ package authrequest
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -24,27 +22,29 @@ const (
 type AddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	LoginClient   string                    `json:"login_client"`
-	ClientID      string                    `json:"client_id"`
-	RedirectURI   string                    `json:"redirect_uri"`
-	State         string                    `json:"state,omitempty"`
-	Nonce         string                    `json:"nonce,omitempty"`
-	Scope         []string                  `json:"scope,omitempty"`
-	Audience      []string                  `json:"audience,omitempty"`
-	ResponseType  domain.OIDCResponseType   `json:"response_type,omitempty"`
-	CodeChallenge *domain.OIDCCodeChallenge `json:"code_challenge,omitempty"`
-	Prompt        []domain.Prompt           `json:"prompt,omitempty"`
-	UILocales     []string                  `json:"ui_locales,omitempty"`
-	MaxAge        *time.Duration            `json:"max_age,omitempty"`
-	LoginHint     *string                   `json:"login_hint,omitempty"`
-	HintUserID    *string                   `json:"hint_user_id,omitempty"`
+	LoginClient      string                    `json:"login_client"`
+	ClientID         string                    `json:"client_id"`
+	RedirectURI      string                    `json:"redirect_uri"`
+	State            string                    `json:"state,omitempty"`
+	Nonce            string                    `json:"nonce,omitempty"`
+	Scope            []string                  `json:"scope,omitempty"`
+	Audience         []string                  `json:"audience,omitempty"`
+	ResponseType     domain.OIDCResponseType   `json:"response_type,omitempty"`
+	ResponseMode     domain.OIDCResponseMode   `json:"response_mode,omitempty"`
+	CodeChallenge    *domain.OIDCCodeChallenge `json:"code_challenge,omitempty"`
+	Prompt           []domain.Prompt           `json:"prompt,omitempty"`
+	UILocales        []string                  `json:"ui_locales,omitempty"`
+	MaxAge           *time.Duration            `json:"max_age,omitempty"`
+	LoginHint        *string                   `json:"login_hint,omitempty"`
+	HintUserID       *string                   `json:"hint_user_id,omitempty"`
+	NeedRefreshToken bool                      `json:"need_refresh_token,omitempty"`
 }
 
-func (e *AddedEvent) Data() interface{} {
+func (e *AddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *AddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *AddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -58,12 +58,14 @@ func NewAddedEvent(ctx context.Context,
 	scope,
 	audience []string,
 	responseType domain.OIDCResponseType,
+	responseMode domain.OIDCResponseMode,
 	codeChallenge *domain.OIDCCodeChallenge,
 	prompt []domain.Prompt,
 	uiLocales []string,
 	maxAge *time.Duration,
 	loginHint,
 	hintUserID *string,
+	needRefreshToken bool,
 ) *AddedEvent {
 	return &AddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -71,30 +73,32 @@ func NewAddedEvent(ctx context.Context,
 			aggregate,
 			AddedType,
 		),
-		LoginClient:   loginClient,
-		ClientID:      clientID,
-		RedirectURI:   redirectURI,
-		State:         state,
-		Nonce:         nonce,
-		Scope:         scope,
-		Audience:      audience,
-		ResponseType:  responseType,
-		CodeChallenge: codeChallenge,
-		Prompt:        prompt,
-		UILocales:     uiLocales,
-		MaxAge:        maxAge,
-		LoginHint:     loginHint,
-		HintUserID:    hintUserID,
+		LoginClient:      loginClient,
+		ClientID:         clientID,
+		RedirectURI:      redirectURI,
+		State:            state,
+		Nonce:            nonce,
+		Scope:            scope,
+		Audience:         audience,
+		ResponseType:     responseType,
+		ResponseMode:     responseMode,
+		CodeChallenge:    codeChallenge,
+		Prompt:           prompt,
+		UILocales:        uiLocales,
+		MaxAge:           maxAge,
+		LoginHint:        loginHint,
+		HintUserID:       hintUserID,
+		NeedRefreshToken: needRefreshToken,
 	}
 }
 
-func AddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func AddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	added := &AddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, added)
+	err := event.Unmarshal(added)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "AUTHR-DG4gn", "unable to unmarshal auth request added")
+		return nil, zerrors.ThrowInternal(err, "AUTHR-DG4gn", "unable to unmarshal auth request added")
 	}
 
 	return added, nil
@@ -109,11 +113,11 @@ type SessionLinkedEvent struct {
 	AuthMethods []domain.UserAuthMethodType `json:"auth_methods"`
 }
 
-func (e *SessionLinkedEvent) Data() interface{} {
+func (e *SessionLinkedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *SessionLinkedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *SessionLinkedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -137,13 +141,13 @@ func NewSessionLinkedEvent(ctx context.Context,
 	}
 }
 
-func SessionLinkedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func SessionLinkedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	added := &SessionLinkedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, added)
+	err := event.Unmarshal(added)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request session linked")
+		return nil, zerrors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request session linked")
 	}
 
 	return added, nil
@@ -155,11 +159,11 @@ type FailedEvent struct {
 	Reason domain.OIDCErrorReason `json:"reason,omitempty"`
 }
 
-func (e *FailedEvent) Data() interface{} {
+func (e *FailedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *FailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *FailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -178,13 +182,13 @@ func NewFailedEvent(
 	}
 }
 
-func FailedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func FailedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	added := &FailedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, added)
+	err := event.Unmarshal(added)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request session linked")
+		return nil, zerrors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request session linked")
 	}
 
 	return added, nil
@@ -194,11 +198,11 @@ type CodeAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *CodeAddedEvent) Data() interface{} {
+func (e *CodeAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *CodeAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *CodeAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -214,13 +218,13 @@ func NewCodeAddedEvent(ctx context.Context,
 	}
 }
 
-func CodeAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func CodeAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	added := &CodeAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, added)
+	err := event.Unmarshal(added)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request code added")
+		return nil, zerrors.ThrowInternal(err, "AUTHR-Sfe3w", "unable to unmarshal auth request code added")
 	}
 
 	return added, nil
@@ -230,11 +234,11 @@ type CodeExchangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *CodeExchangedEvent) Data() interface{} {
+func (e *CodeExchangedEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *CodeExchangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *CodeExchangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -250,7 +254,7 @@ func NewCodeExchangedEvent(ctx context.Context,
 	}
 }
 
-func CodeExchangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func CodeExchangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &CodeExchangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
@@ -260,11 +264,11 @@ type SucceededEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *SucceededEvent) Data() interface{} {
+func (e *SucceededEvent) Payload() interface{} {
 	return nil
 }
 
-func (e *SucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *SucceededEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -280,7 +284,7 @@ func NewSucceededEvent(ctx context.Context,
 	}
 }
 
-func SucceededEventMapper(event *repository.Event) (eventstore.Event, error) {
+func SucceededEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	return &SucceededEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil

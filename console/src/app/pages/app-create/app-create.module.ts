@@ -1,11 +1,11 @@
 import { CommonModule } from '@angular/common';
 import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatIconModule } from '@angular/material/icon';
-import { MatLegacyButtonModule as MatButtonModule } from '@angular/material/legacy-button';
-import { MatLegacyCheckboxModule as MatCheckboxModule } from '@angular/material/legacy-checkbox';
-import { MatLegacySelectModule as MatSelectModule } from '@angular/material/legacy-select';
-import { MatLegacySlideToggleModule as MatSlideToggleModule } from '@angular/material/legacy-slide-toggle';
+import { MatSelectModule } from '@angular/material/select';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { TranslateModule } from '@ngx-translate/core';
 import { HasRoleModule } from 'src/app/directives/has-role/has-role.module';
 import { CreateLayoutModule } from 'src/app/modules/create-layout/create-layout.module';
@@ -17,11 +17,15 @@ import { HasRolePipeModule } from 'src/app/pipes/has-role-pipe/has-role-pipe.mod
 import { SearchProjectAutocompleteModule } from 'src/app/modules/search-project-autocomplete/search-project-autocomplete.module';
 import { AppCreateRoutingModule } from './app-create-routing.module';
 import { AppCreateComponent } from './app-create.component';
+import { FrameworkAutocompleteComponent } from 'src/app/components/framework-autocomplete/framework-autocomplete.component';
+import { FrameworkChangeComponent } from 'src/app/components/framework-change/framework-change.component';
 
 @NgModule({
   declarations: [AppCreateComponent],
   imports: [
+    FrameworkChangeComponent,
     AppCreateRoutingModule,
+    FrameworkAutocompleteComponent,
     CommonModule,
     FormsModule,
     ReactiveFormsModule,
@@ -35,9 +39,6 @@ import { AppCreateComponent } from './app-create.component';
     HasRolePipeModule,
     TranslateModule,
     HasRoleModule,
-    MatCheckboxModule,
-    PasswordComplexityViewModule,
-    MatSlideToggleModule,
   ],
 })
 export default class AppCreateModule {}

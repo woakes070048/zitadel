@@ -7,12 +7,11 @@ import (
 	"time"
 
 	"github.com/zitadel/logging"
-	"github.com/zitadel/oidc/v2/pkg/client/rp"
+	"github.com/zitadel/oidc/v3/pkg/client/rp"
 	"golang.org/x/oauth2"
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	providers "github.com/zitadel/zitadel/internal/idp"
 	"github.com/zitadel/zitadel/internal/idp/providers/apple"
@@ -24,10 +23,13 @@ import (
 	"github.com/zitadel/zitadel/internal/idp/providers/ldap"
 	"github.com/zitadel/zitadel/internal/idp/providers/oauth"
 	"github.com/zitadel/zitadel/internal/idp/providers/oidc"
+	saml2 "github.com/zitadel/zitadel/internal/idp/providers/saml"
+	"github.com/zitadel/zitadel/internal/idp/providers/saml/requesttracker"
 	"github.com/zitadel/zitadel/internal/repository/idp"
 	"github.com/zitadel/zitadel/internal/repository/idpconfig"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type OAuthIDPWriteModel struct {
@@ -106,7 +108,7 @@ func (wm *OAuthIDPWriteModel) NewChanges(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	authorizationEndpoint,
 	tokenEndpoint,
 	userEndpoint,
@@ -276,7 +278,7 @@ func (wm *OIDCIDPWriteModel) NewChanges(
 	issuer,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	idTokenMapping bool,
 	options idp.Options,
@@ -634,7 +636,7 @@ func (wm *AzureADIDPWriteModel) NewChanges(
 	name string,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	tenant string,
 	isEmailVerified bool,
@@ -770,7 +772,7 @@ func (wm *GitHubIDPWriteModel) NewChanges(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) ([]idp.GitHubIDPChanges, error) {
@@ -902,7 +904,7 @@ func (wm *GitHubEnterpriseIDPWriteModel) NewChanges(
 	name,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	authorizationEndpoint,
 	tokenEndpoint,
 	userEndpoint string,
@@ -1035,7 +1037,7 @@ func (wm *GitLabIDPWriteModel) NewChanges(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) ([]idp.GitLabIDPChanges, error) {
@@ -1159,7 +1161,7 @@ func (wm *GitLabSelfHostedIDPWriteModel) NewChanges(
 	issuer string,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) ([]idp.GitLabSelfHostedIDPChanges, error) {
@@ -1283,7 +1285,7 @@ func (wm *GoogleIDPWriteModel) NewChanges(
 	name string,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) ([]idp.GoogleIDPChanges, error) {
@@ -1458,7 +1460,7 @@ func (wm *LDAPIDPWriteModel) NewChanges(
 	userObjectClasses []string,
 	userFilters []string,
 	timeout time.Duration,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	attributes idp.LDAPAttributes,
 	options idp.Options,
 ) ([]idp.LDAPIDPChanges, error) {
@@ -1651,7 +1653,7 @@ func (wm *AppleIDPWriteModel) NewChanges(
 	teamID string,
 	keyID string,
 	privateKey []byte,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) ([]idp.AppleIDPChanges, error) {
@@ -1721,6 +1723,177 @@ func (wm *AppleIDPWriteModel) GetProviderOptions() idp.Options {
 	return wm.Options
 }
 
+type SAMLIDPWriteModel struct {
+	eventstore.WriteModel
+
+	Name                          string
+	ID                            string
+	Metadata                      []byte
+	Key                           *crypto.CryptoValue
+	Certificate                   []byte
+	Binding                       string
+	WithSignedRequest             bool
+	NameIDFormat                  *domain.SAMLNameIDFormat
+	TransientMappingAttributeName string
+	idp.Options
+
+	State domain.IDPState
+}
+
+func (wm *SAMLIDPWriteModel) Reduce() error {
+	for _, event := range wm.Events {
+		switch e := event.(type) {
+		case *idp.SAMLIDPAddedEvent:
+			wm.reduceAddedEvent(e)
+		case *idp.SAMLIDPChangedEvent:
+			wm.reduceChangedEvent(e)
+		case *idp.RemovedEvent:
+			wm.State = domain.IDPStateRemoved
+		}
+	}
+	return wm.WriteModel.Reduce()
+}
+
+func (wm *SAMLIDPWriteModel) reduceAddedEvent(e *idp.SAMLIDPAddedEvent) {
+	wm.Name = e.Name
+	wm.Metadata = e.Metadata
+	wm.Key = e.Key
+	wm.Certificate = e.Certificate
+	wm.Binding = e.Binding
+	wm.WithSignedRequest = e.WithSignedRequest
+	wm.NameIDFormat = e.NameIDFormat
+	wm.TransientMappingAttributeName = e.TransientMappingAttributeName
+	wm.Options = e.Options
+	wm.State = domain.IDPStateActive
+}
+
+func (wm *SAMLIDPWriteModel) reduceChangedEvent(e *idp.SAMLIDPChangedEvent) {
+	if e.Key != nil {
+		wm.Key = e.Key
+	}
+	if e.Certificate != nil {
+		wm.Certificate = e.Certificate
+	}
+	if e.Name != nil {
+		wm.Name = *e.Name
+	}
+	if e.Metadata != nil {
+		wm.Metadata = e.Metadata
+	}
+	if e.Binding != nil {
+		wm.Binding = *e.Binding
+	}
+	if e.WithSignedRequest != nil {
+		wm.WithSignedRequest = *e.WithSignedRequest
+	}
+	if e.NameIDFormat != nil {
+		wm.NameIDFormat = e.NameIDFormat
+	}
+	if e.TransientMappingAttributeName != nil {
+		wm.TransientMappingAttributeName = *e.TransientMappingAttributeName
+	}
+	wm.Options.ReduceChanges(e.OptionChanges)
+}
+
+func (wm *SAMLIDPWriteModel) NewChanges(
+	name string,
+	metadata,
+	key,
+	certificate []byte,
+	secretCrypto crypto.EncryptionAlgorithm,
+	binding string,
+	withSignedRequest bool,
+	nameIDFormat *domain.SAMLNameIDFormat,
+	transientMappingAttributeName string,
+	options idp.Options,
+) ([]idp.SAMLIDPChanges, error) {
+	changes := make([]idp.SAMLIDPChanges, 0)
+	if key != nil {
+		keyEnc, err := crypto.Crypt(key, secretCrypto)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, idp.ChangeSAMLKey(keyEnc))
+	}
+	if certificate != nil {
+		changes = append(changes, idp.ChangeSAMLCertificate(certificate))
+	}
+	if wm.Name != name {
+		changes = append(changes, idp.ChangeSAMLName(name))
+	}
+	if !reflect.DeepEqual(wm.Metadata, metadata) {
+		changes = append(changes, idp.ChangeSAMLMetadata(metadata))
+	}
+	if wm.Binding != binding {
+		changes = append(changes, idp.ChangeSAMLBinding(binding))
+	}
+	if wm.WithSignedRequest != withSignedRequest {
+		changes = append(changes, idp.ChangeSAMLWithSignedRequest(withSignedRequest))
+	}
+	if wm.NameIDFormat != nameIDFormat {
+		changes = append(changes, idp.ChangeSAMLNameIDFormat(nameIDFormat))
+	}
+	if wm.TransientMappingAttributeName != transientMappingAttributeName {
+		changes = append(changes, idp.ChangeSAMLTransientMappingAttributeName(transientMappingAttributeName))
+	}
+	opts := wm.Options.Changes(options)
+	if !opts.IsZero() {
+		changes = append(changes, idp.ChangeSAMLOptions(opts))
+	}
+	return changes, nil
+}
+
+func (wm *SAMLIDPWriteModel) ToProvider(callbackURL string, idpAlg crypto.EncryptionAlgorithm, getRequest requesttracker.GetRequest, addRequest requesttracker.AddRequest) (providers.Provider, error) {
+	key, err := crypto.Decrypt(wm.Key, idpAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := make([]saml2.ProviderOpts, 0, 7)
+	if wm.IsCreationAllowed {
+		opts = append(opts, saml2.WithCreationAllowed())
+	}
+	if wm.IsLinkingAllowed {
+		opts = append(opts, saml2.WithLinkingAllowed())
+	}
+	if wm.IsAutoCreation {
+		opts = append(opts, saml2.WithAutoCreation())
+	}
+	if wm.IsAutoUpdate {
+		opts = append(opts, saml2.WithAutoUpdate())
+	}
+	if wm.WithSignedRequest {
+		opts = append(opts, saml2.WithSignedRequest())
+	}
+	if wm.Binding != "" {
+		opts = append(opts, saml2.WithBinding(wm.Binding))
+	}
+	if wm.NameIDFormat != nil {
+		opts = append(opts, saml2.WithNameIDFormat(*wm.NameIDFormat))
+	}
+	if wm.TransientMappingAttributeName != "" {
+		opts = append(opts, saml2.WithTransientMappingAttributeName(wm.TransientMappingAttributeName))
+	}
+	opts = append(opts, saml2.WithCustomRequestTracker(
+		requesttracker.New(
+			addRequest,
+			getRequest,
+		),
+	))
+	return saml2.New(
+		wm.Name,
+		callbackURL,
+		wm.Metadata,
+		wm.Certificate,
+		key,
+		opts...,
+	)
+}
+
+func (wm *SAMLIDPWriteModel) GetProviderOptions() idp.Options {
+	return wm.Options
+}
+
 type IDPRemoveWriteModel struct {
 	eventstore.WriteModel
 
@@ -1752,6 +1925,8 @@ func (wm *IDPRemoveWriteModel) Reduce() error {
 		case *idp.LDAPIDPAddedEvent:
 			wm.reduceAdded(e.ID)
 		case *idp.AppleIDPAddedEvent:
+			wm.reduceAdded(e.ID)
+		case *idp.SAMLIDPAddedEvent:
 			wm.reduceAdded(e.ID)
 		case *idp.RemovedEvent:
 			wm.reduceRemoved(e.ID)
@@ -1839,6 +2014,10 @@ func (wm *IDPTypeWriteModel) Reduce() error {
 			wm.reduceAdded(e.ID, domain.IDPTypeApple, e.Aggregate())
 		case *org.AppleIDPAddedEvent:
 			wm.reduceAdded(e.ID, domain.IDPTypeApple, e.Aggregate())
+		case *instance.SAMLIDPAddedEvent:
+			wm.reduceAdded(e.ID, domain.IDPTypeSAML, e.Aggregate())
+		case *org.SAMLIDPAddedEvent:
+			wm.reduceAdded(e.ID, domain.IDPTypeSAML, e.Aggregate())
 		case *instance.OIDCIDPMigratedAzureADEvent:
 			wm.reduceChanged(e.ID, domain.IDPTypeAzureAD)
 		case *org.OIDCIDPMigratedAzureADEvent:
@@ -1872,7 +2051,7 @@ func (wm *IDPTypeWriteModel) Reduce() error {
 	return wm.WriteModel.Reduce()
 }
 
-func (wm *IDPTypeWriteModel) reduceAdded(id string, t domain.IDPType, agg eventstore.Aggregate) {
+func (wm *IDPTypeWriteModel) reduceAdded(id string, t domain.IDPType, agg *eventstore.Aggregate) {
 	if wm.ID != id {
 		return
 	}
@@ -1915,6 +2094,7 @@ func (wm *IDPTypeWriteModel) Query() *eventstore.SearchQueryBuilder {
 			instance.GoogleIDPAddedEventType,
 			instance.LDAPIDPAddedEventType,
 			instance.AppleIDPAddedEventType,
+			instance.SAMLIDPAddedEventType,
 			instance.OIDCIDPMigratedAzureADEventType,
 			instance.OIDCIDPMigratedGoogleEventType,
 			instance.IDPRemovedEventType,
@@ -1934,6 +2114,7 @@ func (wm *IDPTypeWriteModel) Query() *eventstore.SearchQueryBuilder {
 			org.GoogleIDPAddedEventType,
 			org.LDAPIDPAddedEventType,
 			org.AppleIDPAddedEventType,
+			org.SAMLIDPAddedEventType,
 			org.OIDCIDPMigratedAzureADEventType,
 			org.OIDCIDPMigratedGoogleEventType,
 			org.IDPRemovedEventType,
@@ -1962,8 +2143,15 @@ type IDP interface {
 	GetProviderOptions() idp.Options
 }
 
+type SAMLIDP interface {
+	eventstore.QueryReducer
+	ToProvider(string, crypto.EncryptionAlgorithm, requesttracker.GetRequest, requesttracker.AddRequest) (providers.Provider, error)
+	GetProviderOptions() idp.Options
+}
+
 type AllIDPWriteModel struct {
-	model IDP
+	model     IDP
+	samlModel SAMLIDP
 
 	ID            string
 	IDPType       domain.IDPType
@@ -2003,10 +2191,12 @@ func NewAllIDPWriteModel(resourceOwner string, instanceBool bool, id string, idp
 			writeModel.model = NewGoogleInstanceIDPWriteModel(resourceOwner, id)
 		case domain.IDPTypeApple:
 			writeModel.model = NewAppleInstanceIDPWriteModel(resourceOwner, id)
+		case domain.IDPTypeSAML:
+			writeModel.samlModel = NewSAMLInstanceIDPWriteModel(resourceOwner, id)
 		case domain.IDPTypeUnspecified:
 			fallthrough
 		default:
-			return nil, errors.ThrowInternal(nil, "COMMAND-xw921211", "Errors.IDPConfig.NotExisting")
+			return nil, zerrors.ThrowInternal(nil, "COMMAND-xw921211", "Errors.IDPConfig.NotExisting")
 		}
 	} else {
 		switch idpType {
@@ -2032,31 +2222,56 @@ func NewAllIDPWriteModel(resourceOwner string, instanceBool bool, id string, idp
 			writeModel.model = NewGoogleOrgIDPWriteModel(resourceOwner, id)
 		case domain.IDPTypeApple:
 			writeModel.model = NewAppleOrgIDPWriteModel(resourceOwner, id)
+		case domain.IDPTypeSAML:
+			writeModel.samlModel = NewSAMLOrgIDPWriteModel(resourceOwner, id)
 		case domain.IDPTypeUnspecified:
 			fallthrough
 		default:
-			return nil, errors.ThrowInternal(nil, "COMMAND-xw921111", "Errors.IDPConfig.NotExisting")
+			return nil, zerrors.ThrowInternal(nil, "COMMAND-xw921111", "Errors.IDPConfig.NotExisting")
 		}
 	}
 	return writeModel, nil
 }
 
 func (wm *AllIDPWriteModel) Reduce() error {
-	return wm.model.Reduce()
+	if wm.model != nil {
+		return wm.model.Reduce()
+	}
+	return wm.samlModel.Reduce()
 }
 
 func (wm *AllIDPWriteModel) Query() *eventstore.SearchQueryBuilder {
-	return wm.model.Query()
+	if wm.model != nil {
+		return wm.model.Query()
+	}
+	return wm.samlModel.Query()
 }
 
 func (wm *AllIDPWriteModel) AppendEvents(events ...eventstore.Event) {
-	wm.model.AppendEvents(events...)
+	if wm.model != nil {
+		wm.model.AppendEvents(events...)
+		return
+	}
+	wm.samlModel.AppendEvents(events...)
 }
 
 func (wm *AllIDPWriteModel) ToProvider(callbackURL string, idpAlg crypto.EncryptionAlgorithm) (providers.Provider, error) {
+	if wm.model == nil {
+		return nil, zerrors.ThrowInternal(nil, "COMMAND-afvf0gc9sa", "ErrorsIDPConfig.NotExisting")
+	}
 	return wm.model.ToProvider(callbackURL, idpAlg)
 }
 
 func (wm *AllIDPWriteModel) GetProviderOptions() idp.Options {
-	return wm.model.GetProviderOptions()
+	if wm.model != nil {
+		return wm.model.GetProviderOptions()
+	}
+	return wm.samlModel.GetProviderOptions()
+}
+
+func (wm *AllIDPWriteModel) ToSAMLProvider(callbackURL string, idpAlg crypto.EncryptionAlgorithm, getRequest requesttracker.GetRequest, addRequest requesttracker.AddRequest) (providers.Provider, error) {
+	if wm.samlModel == nil {
+		return nil, zerrors.ThrowInternal(nil, "COMMAND-csi30hdscv", "ErrorsIDPConfig.NotExisting")
+	}
+	return wm.samlModel.ToProvider(callbackURL, idpAlg, getRequest, addRequest)
 }

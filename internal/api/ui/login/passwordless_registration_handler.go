@@ -87,9 +87,9 @@ func (l *Login) renderPasswordlessRegistration(w http.ResponseWriter, r *http.Re
 	var webAuthNToken *domain.WebAuthNToken
 	if err == nil {
 		if authReq != nil {
-			webAuthNToken, err = l.authRepo.BeginPasswordlessSetup(setContext(r.Context(), authReq.UserOrgID), userID, authReq.UserOrgID, domain.AuthenticatorAttachment(requestedPlatformType))
+			webAuthNToken, err = l.authRepo.BeginPasswordlessSetup(setUserContext(r.Context(), userID, authReq.UserOrgID), userID, authReq.UserOrgID, domain.AuthenticatorAttachment(requestedPlatformType))
 		} else {
-			webAuthNToken, err = l.authRepo.BeginPasswordlessInitCodeSetup(setContext(r.Context(), orgID), userID, orgID, codeID, code, domain.AuthenticatorAttachment(requestedPlatformType))
+			webAuthNToken, err = l.authRepo.BeginPasswordlessInitCodeSetup(setUserContext(r.Context(), userID, orgID), userID, orgID, codeID, code, domain.AuthenticatorAttachment(requestedPlatformType))
 		}
 	}
 	if err != nil {
@@ -99,11 +99,10 @@ func (l *Login) renderPasswordlessRegistration(w http.ResponseWriter, r *http.Re
 	if webAuthNToken != nil {
 		credentialData = base64.RawURLEncoding.EncodeToString(webAuthNToken.CredentialCreationData)
 	}
-
 	translator := l.getTranslator(r.Context(), authReq)
 	data := &passwordlessRegistrationData{
 		webAuthNData{
-			userData:               l.getUserData(r, authReq, "PasswordlessRegistration.Title", "PasswordlessRegistration.Description", errID, errMessage),
+			userData:               l.getUserData(r, authReq, translator, "PasswordlessRegistration.Title", "PasswordlessRegistration.Description", errID, errMessage),
 			CredentialCreationData: credentialData,
 		},
 		code,
@@ -115,13 +114,11 @@ func (l *Login) renderPasswordlessRegistration(w http.ResponseWriter, r *http.Re
 	}
 	if authReq == nil {
 		policy, err := l.query.ActiveLabelPolicyByOrg(r.Context(), orgID, false)
-		logging.Log("HANDL-XjWKE").OnError(err).Error("unable to get active label policy")
+		logging.OnError(err).Error("unable to get active label policy")
 		data.LabelPolicy = labelPolicyToDomain(policy)
-
-		translator, err = l.renderer.NewTranslator(r.Context())
 		if err == nil {
 			texts, err := l.authRepo.GetLoginText(r.Context(), orgID)
-			logging.Log("LOGIN-HJK4t").OnError(err).Warn("could not get custom texts")
+			logging.OnError(err).Warn("could not get custom texts")
 			l.addLoginTranslations(translator, texts)
 		}
 	}
@@ -193,9 +190,8 @@ func (l *Login) renderPasswordlessRegistrationDone(w http.ResponseWriter, r *htt
 		errID, errMessage = l.getErrorMessage(r, err)
 	}
 	translator := l.getTranslator(r.Context(), authReq)
-
 	data := passwordlessRegistrationDoneDate{
-		userData:       l.getUserData(r, authReq, "PasswordlessRegistrationDone.Title", "PasswordlessRegistrationDone.Description", errID, errMessage),
+		userData:       l.getUserData(r, authReq, translator, "PasswordlessRegistrationDone.Title", "PasswordlessRegistrationDone.Description", errID, errMessage),
 		HideNextButton: authReq == nil,
 	}
 	if authReq == nil {

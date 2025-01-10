@@ -25,8 +25,10 @@ type IDPIntentWriteModel struct {
 
 	IDPEntryAttributes map[string][]string
 
-	State     domain.IDPIntentState
-	aggregate *eventstore.Aggregate
+	RequestID string
+	Assertion *crypto.CryptoValue
+
+	State domain.IDPIntentState
 }
 
 func NewIDPIntentWriteModel(id, resourceOwner string) *IDPIntentWriteModel {
@@ -35,7 +37,6 @@ func NewIDPIntentWriteModel(id, resourceOwner string) *IDPIntentWriteModel {
 			AggregateID:   id,
 			ResourceOwner: resourceOwner,
 		},
-		aggregate: &idpintent.NewAggregate(id, resourceOwner).Aggregate,
 	}
 }
 
@@ -46,6 +47,10 @@ func (wm *IDPIntentWriteModel) Reduce() error {
 			wm.reduceStartedEvent(e)
 		case *idpintent.SucceededEvent:
 			wm.reduceOAuthSucceededEvent(e)
+		case *idpintent.SAMLSucceededEvent:
+			wm.reduceSAMLSucceededEvent(e)
+		case *idpintent.SAMLRequestEvent:
+			wm.reduceSAMLRequestEvent(e)
 		case *idpintent.LDAPSucceededEvent:
 			wm.reduceLDAPSucceededEvent(e)
 		case *idpintent.FailedEvent:
@@ -64,6 +69,8 @@ func (wm *IDPIntentWriteModel) Query() *eventstore.SearchQueryBuilder {
 		EventTypes(
 			idpintent.StartedEventType,
 			idpintent.SucceededEventType,
+			idpintent.SAMLSucceededEventType,
+			idpintent.SAMLRequestEventType,
 			idpintent.LDAPSucceededEventType,
 			idpintent.FailedEventType,
 		).
@@ -75,6 +82,15 @@ func (wm *IDPIntentWriteModel) reduceStartedEvent(e *idpintent.StartedEvent) {
 	wm.FailureURL = e.FailureURL
 	wm.IDPID = e.IDPID
 	wm.State = domain.IDPIntentStateStarted
+}
+
+func (wm *IDPIntentWriteModel) reduceSAMLSucceededEvent(e *idpintent.SAMLSucceededEvent) {
+	wm.UserID = e.UserID
+	wm.IDPUser = e.IDPUser
+	wm.IDPUserID = e.IDPUserID
+	wm.IDPUserName = e.IDPUserName
+	wm.Assertion = e.Assertion
+	wm.State = domain.IDPIntentStateSucceeded
 }
 
 func (wm *IDPIntentWriteModel) reduceLDAPSucceededEvent(e *idpintent.LDAPSucceededEvent) {
@@ -96,6 +112,20 @@ func (wm *IDPIntentWriteModel) reduceOAuthSucceededEvent(e *idpintent.SucceededE
 	wm.State = domain.IDPIntentStateSucceeded
 }
 
+func (wm *IDPIntentWriteModel) reduceSAMLRequestEvent(e *idpintent.SAMLRequestEvent) {
+	wm.RequestID = e.RequestID
+}
+
 func (wm *IDPIntentWriteModel) reduceFailedEvent(e *idpintent.FailedEvent) {
 	wm.State = domain.IDPIntentStateFailed
+}
+
+func IDPIntentAggregateFromWriteModel(wm *eventstore.WriteModel) *eventstore.Aggregate {
+	return &eventstore.Aggregate{
+		Type:          idpintent.AggregateType,
+		Version:       idpintent.AggregateVersion,
+		ID:            wm.AggregateID,
+		ResourceOwner: wm.ResourceOwner,
+		InstanceID:    wm.InstanceID,
+	}
 }

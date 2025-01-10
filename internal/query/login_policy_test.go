@@ -11,7 +11,7 @@ import (
 
 	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -84,6 +84,7 @@ var (
 )
 
 func Test_LoginPolicyPrepares(t *testing.T) {
+	duration := 2 * time.Hour
 	type want struct {
 		sqlExpectations sqlExpectation
 		err             checkErr
@@ -104,7 +105,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -129,8 +130,8 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 						true,
 						true,
 						true,
-						database.EnumArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
-						database.EnumArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
+						database.NumberArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
+						database.NumberArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
 						domain.PasswordlessTypeAllowed,
 						true,
 						true,
@@ -139,11 +140,11 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 						true,
 						true,
 						"https://example.com/redirect",
-						time.Hour * 2,
-						time.Hour * 2,
-						time.Hour * 2,
-						time.Hour * 2,
-						time.Hour * 2,
+						&duration,
+						&duration,
+						&duration,
+						&duration,
+						&duration,
 					},
 				),
 			},
@@ -157,8 +158,8 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 				AllowExternalIDPs:          true,
 				ForceMFA:                   true,
 				ForceMFALocalOnly:          true,
-				SecondFactors:              database.EnumArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
-				MultiFactors:               database.EnumArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
+				SecondFactors:              database.NumberArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
+				MultiFactors:               database.NumberArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
 				PasswordlessType:           domain.PasswordlessTypeAllowed,
 				IsDefault:                  true,
 				HidePasswordReset:          true,
@@ -167,11 +168,11 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 				DisableLoginWithEmail:      true,
 				DisableLoginWithPhone:      true,
 				DefaultRedirectURI:         "https://example.com/redirect",
-				PasswordCheckLifetime:      time.Hour * 2,
-				ExternalLoginCheckLifetime: time.Hour * 2,
-				MFAInitSkipLifetime:        time.Hour * 2,
-				SecondFactorCheckLifetime:  time.Hour * 2,
-				MultiFactorCheckLifetime:   time.Hour * 2,
+				PasswordCheckLifetime:      database.Duration(duration),
+				ExternalLoginCheckLifetime: database.Duration(duration),
+				MFAInitSkipLifetime:        database.Duration(duration),
+				SecondFactorCheckLifetime:  database.Duration(duration),
+				MultiFactorCheckLifetime:   database.Duration(duration),
 			},
 		},
 		{
@@ -201,7 +202,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -217,7 +218,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					regexp.QuoteMeta(prepareLoginPolicy2FAsStmt),
 					prepareLoginPolicy2FAsCols,
 					[]driver.Value{
-						database.EnumArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
+						database.NumberArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
 					},
 				),
 			},
@@ -225,7 +226,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 				SearchResponse: SearchResponse{
 					Count: 1,
 				},
-				Factors: database.EnumArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
+				Factors: database.NumberArray[domain.SecondFactorType]{domain.SecondFactorTypeTOTP},
 			},
 		},
 		{
@@ -236,11 +237,11 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					regexp.QuoteMeta(prepareLoginPolicy2FAsStmt),
 					prepareLoginPolicy2FAsCols,
 					[]driver.Value{
-						database.EnumArray[domain.SecondFactorType]{},
+						database.NumberArray[domain.SecondFactorType]{},
 					},
 				),
 			},
-			object: &SecondFactors{Factors: database.EnumArray[domain.SecondFactorType]{}},
+			object: &SecondFactors{Factors: database.NumberArray[domain.SecondFactorType]{}},
 		},
 		{
 			name:    "prepareLoginPolicy2FAsQuery sql err",
@@ -269,7 +270,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -285,7 +286,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					regexp.QuoteMeta(prepareLoginPolicyMFAsStmt),
 					prepareLoginPolicyMFAsCols,
 					[]driver.Value{
-						database.EnumArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
+						database.NumberArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
 					},
 				),
 			},
@@ -293,7 +294,7 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 				SearchResponse: SearchResponse{
 					Count: 1,
 				},
-				Factors: database.EnumArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
+				Factors: database.NumberArray[domain.MultiFactorType]{domain.MultiFactorTypeU2FWithPIN},
 			},
 		},
 		{
@@ -304,11 +305,11 @@ func Test_LoginPolicyPrepares(t *testing.T) {
 					regexp.QuoteMeta(prepareLoginPolicyMFAsStmt),
 					prepareLoginPolicyMFAsCols,
 					[]driver.Value{
-						database.EnumArray[domain.MultiFactorType]{},
+						database.NumberArray[domain.MultiFactorType]{},
 					},
 				),
 			},
-			object: &MultiFactors{Factors: database.EnumArray[domain.MultiFactorType]{}},
+			object: &MultiFactors{Factors: database.NumberArray[domain.MultiFactorType]{}},
 		},
 		{
 			name:    "prepareLoginPolicyMFAsQuery sql err",

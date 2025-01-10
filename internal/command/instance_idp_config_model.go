@@ -4,9 +4,8 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/idpconfig"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 )
@@ -21,6 +20,7 @@ func NewInstanceIDPConfigWriteModel(ctx context.Context, configID string) *Insta
 			WriteModel: eventstore.WriteModel{
 				AggregateID:   authz.GetInstance(ctx).InstanceID(),
 				ResourceOwner: authz.GetInstance(ctx).InstanceID(),
+				InstanceID:    authz.GetInstance(ctx).InstanceID(),
 			},
 			ConfigID: configID,
 		},

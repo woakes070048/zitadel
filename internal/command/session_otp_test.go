@@ -5,22 +5,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/notification/senders"
+	"github.com/zitadel/zitadel/internal/notification/senders/mock"
+	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/session"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 	type fields struct {
-		userID     string
-		eventstore func(*testing.T) *eventstore.Eventstore
-		createCode cryptoCodeWithDefaultFunc
+		userID          string
+		eventstore      func(*testing.T) *eventstore.Eventstore
+		createPhoneCode encryptedCodeGeneratorWithDefaultFunc
 	}
 	type res struct {
 		err        error
@@ -39,7 +42,7 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JKL3g", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JKL3g", "Errors.User.UserIDMissing"),
 			},
 		},
 		{
@@ -51,7 +54,7 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 				),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-BJ2g3", "Errors.User.MFA.OTP.NotReady"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-BJ2g3", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
@@ -65,7 +68,7 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 						),
 					),
 				),
-				createCode: mockCodeWithDefault("1234567", 5*time.Minute),
+				createPhoneCode: mockEncryptedCodeGeneratorWithDefault("1234567", 5*time.Minute),
 			},
 			res: res{
 				returnCode: "1234567",
@@ -79,6 +82,7 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 						},
 						5*time.Minute,
 						true,
+						"",
 					),
 				},
 			},
@@ -106,12 +110,13 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 				sessionCommands:   []SessionCommand{cmd},
 				sessionWriteModel: sessionModel,
 				eventstore:        tt.fields.eventstore(t),
-				createCode:        tt.fields.createCode,
+				createPhoneCode:   tt.fields.createPhoneCode,
 				now:               time.Now,
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Empty(t, gotCmds)
 			assert.Equal(t, tt.res.returnCode, dst)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
@@ -120,9 +125,9 @@ func TestCommands_CreateOTPSMSChallengeReturnCode(t *testing.T) {
 
 func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 	type fields struct {
-		userID     string
-		eventstore func(*testing.T) *eventstore.Eventstore
-		createCode cryptoCodeWithDefaultFunc
+		userID          string
+		eventstore      func(*testing.T) *eventstore.Eventstore
+		createPhoneCode encryptedCodeGeneratorWithDefaultFunc
 	}
 	type res struct {
 		err      error
@@ -140,7 +145,7 @@ func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JKL3g", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JKL3g", "Errors.User.UserIDMissing"),
 			},
 		},
 		{
@@ -152,7 +157,7 @@ func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 				),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-BJ2g3", "Errors.User.MFA.OTP.NotReady"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-BJ2g3", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
@@ -166,7 +171,7 @@ func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 						),
 					),
 				),
-				createCode: mockCodeWithDefault("1234567", 5*time.Minute),
+				createPhoneCode: mockEncryptedCodeGeneratorWithDefault("1234567", 5*time.Minute),
 			},
 			res: res{
 				commands: []eventstore.Command{
@@ -179,6 +184,31 @@ func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 						},
 						5*time.Minute,
 						false,
+						"",
+					),
+				},
+			},
+		},
+		{
+			name: "generate code externally",
+			fields: fields{
+				userID: "userID",
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org").Aggregate),
+						),
+					),
+				),
+				createPhoneCode: mockEncryptedCodeGeneratorWithDefaultExternal("generatorID"),
+			},
+			res: res{
+				commands: []eventstore.Command{
+					session.NewOTPSMSChallengedEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate,
+						nil,
+						0,
+						false,
+						"generatorID",
 					),
 				},
 			},
@@ -206,12 +236,13 @@ func TestCommands_CreateOTPSMSChallenge(t *testing.T) {
 				sessionCommands:   []SessionCommand{cmd},
 				sessionWriteModel: sessionModel,
 				eventstore:        tt.fields.eventstore(t),
-				createCode:        tt.fields.createCode,
+				createPhoneCode:   tt.fields.createPhoneCode,
 				now:               time.Now,
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Empty(t, gotCmds)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
 	}
@@ -225,6 +256,7 @@ func TestCommands_OTPSMSSent(t *testing.T) {
 		ctx           context.Context
 		sessionID     string
 		resourceOwner string
+		generatorInfo *senders.CodeGeneratorInfo
 	}
 	tests := []struct {
 		name    string
@@ -243,8 +275,9 @@ func TestCommands_OTPSMSSent(t *testing.T) {
 				ctx:           context.Background(),
 				sessionID:     "sessionID",
 				resourceOwner: "instanceID",
+				generatorInfo: &senders.CodeGeneratorInfo{},
 			},
-			wantErr: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-G3t31", "Errors.User.Code.NotFound"),
+			wantErr: zerrors.ThrowPreconditionFailed(nil, "COMMAND-G3t31", "Errors.User.Code.NotFound"),
 		},
 		{
 			name: "challenged and sent",
@@ -261,13 +294,12 @@ func TestCommands_OTPSMSSent(t *testing.T) {
 								},
 								5*time.Minute,
 								false,
+								"",
 							),
 						),
 					),
 					expectPush(
-						eventPusherToEvents(
-							session.NewOTPSMSSentEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate),
-						),
+						session.NewOTPSMSSentEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate, &senders.CodeGeneratorInfo{}),
 					),
 				),
 			},
@@ -275,6 +307,37 @@ func TestCommands_OTPSMSSent(t *testing.T) {
 				ctx:           context.Background(),
 				sessionID:     "sessionID",
 				resourceOwner: "instanceID",
+				generatorInfo: &senders.CodeGeneratorInfo{},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "challenged and sent (externally)",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(
+							session.NewOTPSMSChallengedEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate,
+								nil,
+								0,
+								false,
+								"",
+							),
+						),
+					),
+					expectPush(
+						session.NewOTPSMSSentEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate, &senders.CodeGeneratorInfo{ID: "generatorID", VerificationID: "verificationID"}),
+					),
+				),
+			},
+			args: args{
+				ctx:           context.Background(),
+				sessionID:     "sessionID",
+				resourceOwner: "instanceID",
+				generatorInfo: &senders.CodeGeneratorInfo{
+					ID:             "generatorID",
+					VerificationID: "verificationID",
+				},
 			},
 			wantErr: nil,
 		},
@@ -284,7 +347,7 @@ func TestCommands_OTPSMSSent(t *testing.T) {
 			c := &Commands{
 				eventstore: tt.fields.eventstore(t),
 			}
-			err := c.OTPSMSSent(tt.args.ctx, tt.args.sessionID, tt.args.resourceOwner)
+			err := c.OTPSMSSent(tt.args.ctx, tt.args.sessionID, tt.args.resourceOwner, tt.args.generatorInfo)
 			assert.ErrorIs(t, err, tt.wantErr)
 		})
 	}
@@ -294,7 +357,7 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 	type fields struct {
 		userID     string
 		eventstore func(*testing.T) *eventstore.Eventstore
-		createCode cryptoCodeWithDefaultFunc
+		createCode encryptedCodeWithDefaultFunc
 	}
 	type args struct {
 		urlTmpl string
@@ -319,7 +382,7 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				templateError: caos_errs.ThrowInvalidArgument(nil, "DOMAIN-ieYa7", "Errors.User.InvalidURLTemplate"),
+				templateError: zerrors.ThrowInvalidArgument(nil, "DOMAIN-ieYa7", "Errors.User.InvalidURLTemplate"),
 			},
 		},
 		{
@@ -331,7 +394,7 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
 			},
 		},
 		{
@@ -346,7 +409,7 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 				),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
@@ -363,7 +426,7 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 						),
 					),
 				),
-				createCode: mockCodeWithDefault("1234567", 5*time.Minute),
+				createCode: mockEncryptedCodeWithDefault("1234567", 5*time.Minute),
 			},
 			res: res{
 				commands: []eventstore.Command{
@@ -412,8 +475,9 @@ func TestCommands_CreateOTPEmailChallengeURLTemplate(t *testing.T) {
 				now:               time.Now,
 			}
 
-			err = cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Empty(t, gotCmds)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
 	}
@@ -423,7 +487,7 @@ func TestCommands_CreateOTPEmailChallengeReturnCode(t *testing.T) {
 	type fields struct {
 		userID     string
 		eventstore func(*testing.T) *eventstore.Eventstore
-		createCode cryptoCodeWithDefaultFunc
+		createCode encryptedCodeWithDefaultFunc
 	}
 	type res struct {
 		err        error
@@ -441,7 +505,7 @@ func TestCommands_CreateOTPEmailChallengeReturnCode(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
 			},
 		},
 		{
@@ -453,7 +517,7 @@ func TestCommands_CreateOTPEmailChallengeReturnCode(t *testing.T) {
 				),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
@@ -467,7 +531,7 @@ func TestCommands_CreateOTPEmailChallengeReturnCode(t *testing.T) {
 						),
 					),
 				),
-				createCode: mockCodeWithDefault("1234567", 5*time.Minute),
+				createCode: mockEncryptedCodeWithDefault("1234567", 5*time.Minute),
 			},
 			res: res{
 				returnCode: "1234567",
@@ -513,8 +577,9 @@ func TestCommands_CreateOTPEmailChallengeReturnCode(t *testing.T) {
 				now:               time.Now,
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Empty(t, gotCmds)
 			assert.Equal(t, tt.res.returnCode, dst)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
@@ -525,7 +590,7 @@ func TestCommands_CreateOTPEmailChallenge(t *testing.T) {
 	type fields struct {
 		userID     string
 		eventstore func(*testing.T) *eventstore.Eventstore
-		createCode cryptoCodeWithDefaultFunc
+		createCode encryptedCodeWithDefaultFunc
 	}
 	type res struct {
 		err      error
@@ -542,7 +607,7 @@ func TestCommands_CreateOTPEmailChallenge(t *testing.T) {
 				eventstore: expectEventstore(),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JK3gp", "Errors.User.UserIDMissing"),
 			},
 		},
 		{
@@ -554,7 +619,7 @@ func TestCommands_CreateOTPEmailChallenge(t *testing.T) {
 				),
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-JKLJ3", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
@@ -568,7 +633,7 @@ func TestCommands_CreateOTPEmailChallenge(t *testing.T) {
 						),
 					),
 				),
-				createCode: mockCodeWithDefault("1234567", 5*time.Minute),
+				createCode: mockEncryptedCodeWithDefault("1234567", 5*time.Minute),
 			},
 			res: res{
 				commands: []eventstore.Command{
@@ -613,8 +678,9 @@ func TestCommands_CreateOTPEmailChallenge(t *testing.T) {
 				now:               time.Now,
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Empty(t, gotCmds)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
 	}
@@ -647,7 +713,7 @@ func TestCommands_OTPEmailSent(t *testing.T) {
 				sessionID:     "sessionID",
 				resourceOwner: "instanceID",
 			},
-			wantErr: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-SLr02", "Errors.User.Code.NotFound"),
+			wantErr: zerrors.ThrowPreconditionFailed(nil, "COMMAND-SLr02", "Errors.User.Code.NotFound"),
 		},
 		{
 			name: "challenged and sent",
@@ -669,9 +735,7 @@ func TestCommands_OTPEmailSent(t *testing.T) {
 						),
 					),
 					expectPush(
-						eventPusherToEvents(
-							session.NewOTPEmailSentEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate),
-						),
+						session.NewOTPEmailSentEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate),
 					),
 				),
 			},
@@ -700,13 +764,15 @@ func TestCheckOTPSMS(t *testing.T) {
 		userID           string
 		otpCodeChallenge *OTPCode
 		otpAlg           crypto.EncryptionAlgorithm
+		getCodeVerifier  func(ctx context.Context, id string) (senders.CodeGenerator, error)
 	}
 	type args struct {
 		code string
 	}
 	type res struct {
-		err      error
-		commands []eventstore.Command
+		err           error
+		commands      []eventstore.Command
+		errorCommands []eventstore.Command
 	}
 	tests := []struct {
 		name   string
@@ -724,13 +790,43 @@ func TestCheckOTPSMS(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-VDrh3", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowInvalidArgument(nil, "COMMAND-S453v", "Errors.User.UserIDMissing"),
+			},
+		},
+		{
+			name: "missing code",
+			fields: fields{
+				eventstore: expectEventstore(),
+				userID:     "userID",
+			},
+			args: args{},
+			res: res{
+				err: zerrors.ThrowInvalidArgument(nil, "COMMAND-SJl2g", "Errors.User.Code.Empty"),
+			},
+		},
+		{
+			name: "not set up",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(),
+				),
+				userID: "userID",
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-d2r52", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
 			name: "missing challenge",
 			fields: fields{
-				eventstore:       expectEventstore(),
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+				),
 				userID:           "userID",
 				otpCodeChallenge: nil,
 			},
@@ -738,14 +834,26 @@ func TestCheckOTPSMS(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-SF3tv", "Errors.User.Code.NotFound"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-S34gh", "Errors.User.Code.NotFound"),
 			},
 		},
 		{
 			name: "invalid code",
 			fields: fields{
-				eventstore: expectEventstore(),
-				userID:     "userID",
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+					expectFilter(
+						eventFromEventPusher(
+							org.NewLockoutPolicyAddedEvent(context.Background(), &org.NewAggregate("org1").Aggregate,
+								0, 0, false,
+							),
+						),
+					),
+				),
+				userID: "userID",
 				otpCodeChallenge: &OTPCode{
 					Code: &crypto.CryptoValue{
 						CryptoType: crypto.TypeEncryption,
@@ -762,14 +870,62 @@ func TestCheckOTPSMS(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				err: zerrors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				errorCommands: []eventstore.Command{
+					user.NewHumanOTPSMSCheckFailedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
+				},
+			},
+		},
+		{
+			name: "invalid code, locked",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+					expectFilter(
+						eventFromEventPusher(
+							org.NewLockoutPolicyAddedEvent(context.Background(), &org.NewAggregate("org1").Aggregate,
+								0, 1, false,
+							),
+						),
+					),
+				),
+				userID: "userID",
+				otpCodeChallenge: &OTPCode{
+					Code: &crypto.CryptoValue{
+						CryptoType: crypto.TypeEncryption,
+						Algorithm:  "enc",
+						KeyID:      "id",
+						Crypted:    []byte("code"),
+					},
+					Expiry:       5 * time.Minute,
+					CreationDate: testNow.Add(-10 * time.Minute),
+				},
+				otpAlg: crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				errorCommands: []eventstore.Command{
+					user.NewHumanOTPSMSCheckFailedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
+					user.NewUserLockedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate),
+				},
 			},
 		},
 		{
 			name: "check ok",
 			fields: fields{
-				eventstore: expectEventstore(),
-				userID:     "userID",
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+				),
+				userID: "userID",
 				otpCodeChallenge: &OTPCode{
 					Code: &crypto.CryptoValue{
 						CryptoType: crypto.TypeEncryption,
@@ -787,10 +943,77 @@ func TestCheckOTPSMS(t *testing.T) {
 			},
 			res: res{
 				commands: []eventstore.Command{
+					user.NewHumanOTPSMSCheckSucceededEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
 					session.NewOTPSMSCheckedEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate,
 						testNow,
 					),
 				},
+			},
+		},
+		{
+			name: "check ok (external)",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+				),
+				userID: "userID",
+				otpCodeChallenge: &OTPCode{
+					Code:           nil,
+					Expiry:         0,
+					GeneratorID:    "generatorID",
+					VerificationID: "verificationID",
+					CreationDate:   testNow,
+				},
+				getCodeVerifier: func(ctx context.Context, id string) (senders.CodeGenerator, error) {
+					sender := mock.NewMockCodeGenerator(gomock.NewController(t))
+					sender.EXPECT().VerifyCode("verificationID", "code").Return(nil)
+					return sender, nil
+				},
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				commands: []eventstore.Command{
+					user.NewHumanOTPSMSCheckSucceededEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
+					session.NewOTPSMSCheckedEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate,
+						testNow,
+					),
+				},
+			},
+		},
+		{
+			name: "check ok, locked in the meantime",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPSMSAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(
+						user.NewUserLockedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate),
+					),
+				),
+				userID: "userID",
+				otpCodeChallenge: &OTPCode{
+					Code: &crypto.CryptoValue{
+						CryptoType: crypto.TypeEncryption,
+						Algorithm:  "enc",
+						KeyID:      "id",
+						Crypted:    []byte("code"),
+					},
+					Expiry:       5 * time.Minute,
+					CreationDate: testNow,
+				},
+				otpAlg: crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-S6h4R", "Errors.User.Locked"),
 			},
 		},
 	}
@@ -810,13 +1033,15 @@ func TestCheckOTPSMS(t *testing.T) {
 				sessionWriteModel: sessionModel,
 				eventstore:        tt.fields.eventstore(t),
 				otpAlg:            tt.fields.otpAlg,
+				getCodeVerifier:   tt.fields.getCodeVerifier,
 				now: func() time.Time {
 					return testNow
 				},
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Equal(t, tt.res.errorCommands, gotCmds)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
 	}
@@ -833,8 +1058,9 @@ func TestCheckOTPEmail(t *testing.T) {
 		code string
 	}
 	type res struct {
-		err      error
-		commands []eventstore.Command
+		err           error
+		commands      []eventstore.Command
+		errorCommands []eventstore.Command
 	}
 	tests := []struct {
 		name   string
@@ -852,13 +1078,43 @@ func TestCheckOTPEmail(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-ejo2w", "Errors.User.UserIDMissing"),
+				err: zerrors.ThrowInvalidArgument(nil, "COMMAND-S453v", "Errors.User.UserIDMissing"),
+			},
+		},
+		{
+			name: "missing code",
+			fields: fields{
+				eventstore: expectEventstore(),
+				userID:     "userID",
+			},
+			args: args{},
+			res: res{
+				err: zerrors.ThrowInvalidArgument(nil, "COMMAND-SJl2g", "Errors.User.Code.Empty"),
+			},
+		},
+		{
+			name: "not set up",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(),
+				),
+				userID: "userID",
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-d2r52", "Errors.User.MFA.OTP.NotReady"),
 			},
 		},
 		{
 			name: "missing challenge",
 			fields: fields{
-				eventstore:       expectEventstore(),
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPEmailAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+				),
 				userID:           "userID",
 				otpCodeChallenge: nil,
 			},
@@ -866,14 +1122,26 @@ func TestCheckOTPEmail(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "COMMAND-zF3g3", "Errors.User.Code.NotFound"),
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-S34gh", "Errors.User.Code.NotFound"),
 			},
 		},
 		{
 			name: "invalid code",
 			fields: fields{
-				eventstore: expectEventstore(),
-				userID:     "userID",
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPEmailAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+					expectFilter(
+						eventFromEventPusher(
+							org.NewLockoutPolicyAddedEvent(context.Background(), &org.NewAggregate("org1").Aggregate,
+								0, 0, false,
+							),
+						),
+					),
+				),
+				userID: "userID",
 				otpCodeChallenge: &OTPCode{
 					Code: &crypto.CryptoValue{
 						CryptoType: crypto.TypeEncryption,
@@ -890,14 +1158,62 @@ func TestCheckOTPEmail(t *testing.T) {
 				code: "code",
 			},
 			res: res{
-				err: caos_errs.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				err: zerrors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				errorCommands: []eventstore.Command{
+					user.NewHumanOTPEmailCheckFailedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
+				},
+			},
+		},
+		{
+			name: "invalid code, locked",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPEmailAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+					expectFilter(
+						eventFromEventPusher(
+							org.NewLockoutPolicyAddedEvent(context.Background(), &org.NewAggregate("org1").Aggregate,
+								0, 1, false,
+							),
+						),
+					),
+				),
+				userID: "userID",
+				otpCodeChallenge: &OTPCode{
+					Code: &crypto.CryptoValue{
+						CryptoType: crypto.TypeEncryption,
+						Algorithm:  "enc",
+						KeyID:      "id",
+						Crypted:    []byte("code"),
+					},
+					Expiry:       5 * time.Minute,
+					CreationDate: testNow.Add(-10 * time.Minute),
+				},
+				otpAlg: crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "CODE-QvUQ4P", "Errors.User.Code.Expired"),
+				errorCommands: []eventstore.Command{
+					user.NewHumanOTPEmailCheckFailedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
+					user.NewUserLockedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate),
+				},
 			},
 		},
 		{
 			name: "check ok",
 			fields: fields{
-				eventstore: expectEventstore(),
-				userID:     "userID",
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPEmailAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(), // recheck
+				),
+				userID: "userID",
 				otpCodeChallenge: &OTPCode{
 					Code: &crypto.CryptoValue{
 						CryptoType: crypto.TypeEncryption,
@@ -915,10 +1231,42 @@ func TestCheckOTPEmail(t *testing.T) {
 			},
 			res: res{
 				commands: []eventstore.Command{
+					user.NewHumanOTPEmailCheckSucceededEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate, nil),
 					session.NewOTPEmailCheckedEvent(context.Background(), &session.NewAggregate("sessionID", "instanceID").Aggregate,
 						testNow,
 					),
 				},
+			},
+		},
+		{
+			name: "check ok, locked in the meantime",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(user.NewHumanOTPEmailAddedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate)),
+					),
+					expectFilter(
+						user.NewUserLockedEvent(context.Background(), &user.NewAggregate("userID", "org1").Aggregate),
+					),
+				),
+				userID: "userID",
+				otpCodeChallenge: &OTPCode{
+					Code: &crypto.CryptoValue{
+						CryptoType: crypto.TypeEncryption,
+						Algorithm:  "enc",
+						KeyID:      "id",
+						Crypted:    []byte("code"),
+					},
+					Expiry:       5 * time.Minute,
+					CreationDate: testNow,
+				},
+				otpAlg: crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
+			},
+			args: args{
+				code: "code",
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "COMMAND-S6h4R", "Errors.User.Locked"),
 			},
 		},
 	}
@@ -943,8 +1291,9 @@ func TestCheckOTPEmail(t *testing.T) {
 				},
 			}
 
-			err := cmd(context.Background(), cmds)
+			gotCmds, err := cmd(context.Background(), cmds)
 			assert.ErrorIs(t, err, tt.res.err)
+			assert.Equal(t, tt.res.errorCommands, gotCmds)
 			assert.Equal(t, tt.res.commands, cmds.eventCommands)
 		})
 	}

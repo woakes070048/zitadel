@@ -4,9 +4,8 @@ import (
 	"encoding/base64"
 	"net/http"
 
-	"github.com/zitadel/zitadel/internal/domain"
-
 	http_mw "github.com/zitadel/zitadel/internal/api/http/middleware"
+	"github.com/zitadel/zitadel/internal/domain"
 )
 
 const (
@@ -37,20 +36,21 @@ func (l *Login) renderU2FVerification(w http.ResponseWriter, r *http.Request, au
 	if webAuthNLogin != nil {
 		credentialData = base64.RawURLEncoding.EncodeToString(webAuthNLogin.CredentialAssertionData)
 	}
+	translator := l.getTranslator(r.Context(), authReq)
 	data := &mfaU2FData{
 		webAuthNData: webAuthNData{
-			userData:               l.getUserData(r, authReq, "VerifyMFAU2F.Title", "VerifyMFAU2F.Description", errID, errMessage),
+			userData:               l.getUserData(r, authReq, translator, "VerifyMFAU2F.Title", "VerifyMFAU2F.Description", errID, errMessage),
 			CredentialCreationData: credentialData,
 		},
 		MFAProviders:     providers,
 		SelectedProvider: -1,
 	}
-	l.renderer.RenderTemplate(w, r, l.getTranslator(r.Context(), authReq), l.renderer.Templates[tmplU2FVerification], data, nil)
+	l.renderer.RenderTemplate(w, r, translator, l.renderer.Templates[tmplU2FVerification], data, nil)
 }
 
 func (l *Login) handleU2FVerification(w http.ResponseWriter, r *http.Request) {
 	formData := new(mfaU2FFormData)
-	authReq, err := l.getAuthRequestAndParseData(r, formData)
+	authReq, err := l.ensureAuthRequestAndParseData(r, formData)
 	if err != nil {
 		l.renderError(w, r, authReq, err)
 		return

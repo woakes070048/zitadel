@@ -59,6 +59,7 @@ func writeModelToLabelPolicy(wm *LabelPolicyWriteModel) *domain.LabelPolicy {
 		HideLoginNameSuffix: wm.HideLoginNameSuffix,
 		ErrorMsgPopup:       wm.ErrorMsgPopup,
 		DisableWatermark:    wm.DisableWatermark,
+		ThemeMode:           wm.ThemeMode,
 	}
 }
 
@@ -85,16 +86,6 @@ func writeModelToMailTemplatePolicy(wm *MailTemplateWriteModel) *domain.MailTemp
 	}
 }
 
-func writeModelToCustomText(wm *CustomTextWriteModel) *domain.CustomText {
-	return &domain.CustomText{
-		ObjectRoot: writeModelToObjectRoot(wm.WriteModel),
-		State:      wm.State,
-		Key:        wm.Key,
-		Language:   wm.Language,
-		Text:       wm.Text,
-	}
-}
-
 func writeModelToPasswordAgePolicy(wm *PasswordAgePolicyWriteModel) *domain.PasswordAgePolicy {
 	return &domain.PasswordAgePolicy{
 		ObjectRoot:     writeModelToObjectRoot(wm.WriteModel),
@@ -118,17 +109,21 @@ func writeModelToLockoutPolicy(wm *LockoutPolicyWriteModel) *domain.LockoutPolic
 	return &domain.LockoutPolicy{
 		ObjectRoot:          writeModelToObjectRoot(wm.WriteModel),
 		MaxPasswordAttempts: wm.MaxPasswordAttempts,
+		MaxOTPAttempts:      wm.MaxOTPAttempts,
 		ShowLockOutFailures: wm.ShowLockOutFailures,
 	}
 }
 
 func writeModelToPrivacyPolicy(wm *PrivacyPolicyWriteModel) *domain.PrivacyPolicy {
 	return &domain.PrivacyPolicy{
-		ObjectRoot:   writeModelToObjectRoot(wm.WriteModel),
-		TOSLink:      wm.TOSLink,
-		PrivacyLink:  wm.PrivacyLink,
-		HelpLink:     wm.HelpLink,
-		SupportEmail: wm.SupportEmail,
+		ObjectRoot:     writeModelToObjectRoot(wm.WriteModel),
+		TOSLink:        wm.TOSLink,
+		PrivacyLink:    wm.PrivacyLink,
+		HelpLink:       wm.HelpLink,
+		SupportEmail:   wm.SupportEmail,
+		DocsLink:       wm.DocsLink,
+		CustomLink:     wm.CustomLink,
+		CustomLinkText: wm.CustomLinkText,
 	}
 }
 

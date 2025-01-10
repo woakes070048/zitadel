@@ -10,6 +10,7 @@ import "zitadel/session/v2beta/session.proto";
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "validate/validate.proto";
 
@@ -19,7 +20,7 @@ option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
   info: {
     title: "Session Service";
     version: "2.0-beta";
-    description: "This API is intended to manage sessions in a ZITADEL instance. This project is in beta state. It can AND will continue breaking until the services provide the same functionality as the current login.";
+    description: "This API is intended to manage sessions in a ZITADEL instance. Follow the guides on how to [build your own Login UI](/docs/guides/integrate/login-ui) and learn how to use the Session API. This project is in beta state. It can AND will continue breaking until the services provide the same functionality as the current login.";
     contact:{
       name: "ZITADEL"
       url: "https://zitadel.com"
@@ -247,6 +248,7 @@ service SessionService {
 message ListSessionsRequest{
   zitadel.object.v2beta.ListQuery query = 1;
   repeated SearchQuery queries = 2;
+  zitadel.session.v2beta.SessionFieldName sorting_column = 3;
 }
 
 message ListSessionsResponse{
@@ -274,6 +276,14 @@ message CreateSessionRequest{
     }
   ];
   RequestChallenges challenges = 3;
+  UserAgent user_agent = 4;
+  optional google.protobuf.Duration lifetime = 5 [
+    (validate.rules).duration = {gt: {seconds: 0}},
+    (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
+      description: "\"duration (in seconds) after which the session will be automatically invalidated\"";
+      example:"\"18000s\""
+    }
+  ];
 }
 
 message CreateSessionResponse{
@@ -281,12 +291,12 @@ message CreateSessionResponse{
   string session_id = 2 [
     (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
       description: "\"id of the session\"";
-      example: "\"d654e6ba-70a3-48ef-a95d-37c8d8a7901a\"";
+      example: "\"222430354126975533\"";
     }
   ];
   string session_token = 3 [
     (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
-      description: "\"token of the session, which is required for further updates of the session or the request other resources\"";
+      description: "\"The current token of the session, which is required for delete session, get session or the request of other resources.\"";
     }
   ];
   Challenges challenges = 4;
@@ -299,15 +309,15 @@ message SetSessionRequest{
       min_length: 1;
       max_length: 200;
       description: "\"id of the session to update\"";
-      example: "\"d654e6ba-70a3-48ef-a95d-37c8d8a7901a\"";
+      example: "\"222430354126975533\"";
     }
   ];
   string session_token = 2 [
-    (validate.rules).string = {min_len: 1, max_len: 200},
+    (validate.rules).string = {min_len: 0, max_len: 200},
     (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
       min_length: 1;
       max_length: 200;
-      description: "\"token of the session, previously returned on the create / update request\"";
+      description: "\"DEPRECATED: this field is ignored.\"";
     }
   ];
   Checks checks = 3[
@@ -321,13 +331,20 @@ message SetSessionRequest{
     }
   ];
   RequestChallenges challenges = 5;
+  optional google.protobuf.Duration lifetime = 6 [
+    (validate.rules).duration = {gt: {seconds: 0}},
+    (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
+      description: "\"duration (in seconds) after which the session will be automatically invalidated\"";
+      example:"\"18000s\""
+    }
+  ];
 }
 
 message SetSessionResponse{
   zitadel.object.v2beta.Details details = 1;
   string session_token = 2 [
     (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
-      description: "\"token of the session, which is required for further updates of the session or the request other resources\"";
+      description: "\"The current token of the session, which is required for delete session, get session or the request of other resources.\"";
     }
   ];
   Challenges challenges = 3;
@@ -340,12 +357,12 @@ message DeleteSessionRequest{
       min_length: 1;
       max_length: 200;
       description: "\"id of the session to terminate\"";
-      example: "\"d654e6ba-70a3-48ef-a95d-37c8d8a7901a\"";
+      example: "\"222430354126975533\"";
     }
   ];
   optional string session_token = 2 [
     (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
-      description: "\"token of the session, previously returned on the create / update request\"";
+      description: "\"The current token of the session, previously returned on the create / update request. The token is required unless the authenticated user terminates the own session or is granted the `session.delete` permission.\"";
     }
   ];
 }

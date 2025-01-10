@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/zitadel/zitadel/internal/crypto"
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/idp"
 	"github.com/zitadel/zitadel/internal/repository/instance"
@@ -61,7 +62,7 @@ func (wm *InstanceOAuthIDPWriteModel) NewChangedEvent(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	authorizationEndpoint,
 	tokenEndpoint,
 	userEndpoint,
@@ -171,7 +172,7 @@ func (wm *InstanceOIDCIDPWriteModel) NewChangedEvent(
 	issuer,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	idTokenMapping bool,
 	options idp.Options,
@@ -344,7 +345,7 @@ func (wm *InstanceAzureADIDPWriteModel) NewChangedEvent(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	tenant string,
 	isEmailVerified bool,
@@ -420,7 +421,7 @@ func (wm *InstanceGitHubIDPWriteModel) NewChangedEvent(
 	name,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) (*instance.GitHubIDPChangedEvent, error) {
@@ -485,7 +486,7 @@ func (wm *InstanceGitHubEnterpriseIDPWriteModel) NewChangedEvent(
 	name,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	authorizationEndpoint,
 	tokenEndpoint,
 	userEndpoint string,
@@ -563,7 +564,7 @@ func (wm *InstanceGitLabIDPWriteModel) NewChangedEvent(
 	name,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) (*instance.GitLabIDPChangedEvent, error) {
@@ -629,7 +630,7 @@ func (wm *InstanceGitLabSelfHostedIDPWriteModel) NewChangedEvent(
 	issuer,
 	clientID string,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) (*instance.GitLabSelfHostedIDPChangedEvent, error) {
@@ -695,7 +696,7 @@ func (wm *InstanceGoogleIDPWriteModel) NewChangedEvent(
 	name,
 	clientID,
 	clientSecretString string,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) (*instance.GoogleIDPChangedEvent, error) {
@@ -767,7 +768,7 @@ func (wm *InstanceLDAPIDPWriteModel) NewChangedEvent(
 	userObjectClasses []string,
 	userFilters []string,
 	timeout time.Duration,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	attributes idp.LDAPAttributes,
 	options idp.Options,
 ) (*instance.LDAPIDPChangedEvent, error) {
@@ -848,7 +849,7 @@ func (wm *InstanceAppleIDPWriteModel) NewChangedEvent(
 	teamID,
 	keyID string,
 	privateKey []byte,
-	secretCrypto crypto.Crypto,
+	secretCrypto crypto.EncryptionAlgorithm,
 	scopes []string,
 	options idp.Options,
 ) (*instance.AppleIDPChangedEvent, error) {
@@ -858,6 +859,83 @@ func (wm *InstanceAppleIDPWriteModel) NewChangedEvent(
 		return nil, err
 	}
 	return instance.NewAppleIDPChangedEvent(ctx, aggregate, id, changes)
+}
+
+type InstanceSAMLIDPWriteModel struct {
+	SAMLIDPWriteModel
+}
+
+func NewSAMLInstanceIDPWriteModel(instanceID, id string) *InstanceSAMLIDPWriteModel {
+	return &InstanceSAMLIDPWriteModel{
+		SAMLIDPWriteModel{
+			WriteModel: eventstore.WriteModel{
+				AggregateID:   instanceID,
+				ResourceOwner: instanceID,
+			},
+			ID: id,
+		},
+	}
+}
+
+func (wm *InstanceSAMLIDPWriteModel) AppendEvents(events ...eventstore.Event) {
+	for _, event := range events {
+		switch e := event.(type) {
+		case *instance.SAMLIDPAddedEvent:
+			wm.SAMLIDPWriteModel.AppendEvents(&e.SAMLIDPAddedEvent)
+		case *instance.SAMLIDPChangedEvent:
+			wm.SAMLIDPWriteModel.AppendEvents(&e.SAMLIDPChangedEvent)
+		case *instance.IDPRemovedEvent:
+			wm.SAMLIDPWriteModel.AppendEvents(&e.RemovedEvent)
+		}
+	}
+}
+
+func (wm *InstanceSAMLIDPWriteModel) Query() *eventstore.SearchQueryBuilder {
+	return eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
+		ResourceOwner(wm.ResourceOwner).
+		AddQuery().
+		AggregateTypes(instance.AggregateType).
+		AggregateIDs(wm.AggregateID).
+		EventTypes(
+			instance.SAMLIDPAddedEventType,
+			instance.SAMLIDPChangedEventType,
+			instance.IDPRemovedEventType,
+		).
+		EventData(map[string]interface{}{"id": wm.ID}).
+		Builder()
+}
+
+func (wm *InstanceSAMLIDPWriteModel) NewChangedEvent(
+	ctx context.Context,
+	aggregate *eventstore.Aggregate,
+	id,
+	name string,
+	metadata,
+	key,
+	certificate []byte,
+	secretCrypto crypto.EncryptionAlgorithm,
+	binding string,
+	withSignedRequest bool,
+	nameIDFormat *domain.SAMLNameIDFormat,
+	transientMappingAttributeName string,
+	options idp.Options,
+) (*instance.SAMLIDPChangedEvent, error) {
+	changes, err := wm.SAMLIDPWriteModel.NewChanges(
+		name,
+		metadata,
+		key,
+		certificate,
+		secretCrypto,
+		binding,
+		withSignedRequest,
+		nameIDFormat,
+		transientMappingAttributeName,
+		options,
+	)
+	if err != nil || len(changes) == 0 {
+		return nil, err
+	}
+	return instance.NewSAMLIDPChangedEvent(ctx, aggregate, id, changes)
 }
 
 type InstanceIDPRemoveWriteModel struct {
@@ -897,6 +975,8 @@ func (wm *InstanceIDPRemoveWriteModel) AppendEvents(events ...eventstore.Event) 
 			wm.IDPRemoveWriteModel.AppendEvents(&e.GitLabSelfHostedIDPAddedEvent)
 		case *instance.GoogleIDPAddedEvent:
 			wm.IDPRemoveWriteModel.AppendEvents(&e.GoogleIDPAddedEvent)
+		case *instance.SAMLIDPAddedEvent:
+			wm.IDPRemoveWriteModel.AppendEvents(&e.SAMLIDPAddedEvent)
 		case *instance.LDAPIDPAddedEvent:
 			wm.IDPRemoveWriteModel.AppendEvents(&e.LDAPIDPAddedEvent)
 		case *instance.AppleIDPAddedEvent:
@@ -931,6 +1011,7 @@ func (wm *InstanceIDPRemoveWriteModel) Query() *eventstore.SearchQueryBuilder {
 			instance.GoogleIDPAddedEventType,
 			instance.LDAPIDPAddedEventType,
 			instance.AppleIDPAddedEventType,
+			instance.SAMLIDPAddedEventType,
 			instance.IDPRemovedEventType,
 		).
 		EventData(map[string]interface{}{"id": wm.ID}).

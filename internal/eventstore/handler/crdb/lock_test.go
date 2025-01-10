@@ -11,7 +11,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	"github.com/zitadel/zitadel/internal/database"
-	z_errs "github.com/zitadel/zitadel/internal/errors"
+	db_mock "github.com/zitadel/zitadel/internal/database/mock"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -21,7 +22,7 @@ const (
 )
 
 var (
-	renewNoRowsAffectedErr = z_errs.ThrowAlreadyExists(nil, "CRDB-mmi4J", "projection already locked")
+	renewNoRowsAffectedErr = zerrors.ThrowAlreadyExists(nil, "CRDB-mmi4J", "projection already locked")
 	errLock                = errors.New("lock err")
 )
 
@@ -99,7 +100,7 @@ func TestStatementHandler_handleLock(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, mock, err := sqlmock.New()
+			client, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +159,7 @@ func TestStatementHandler_renewLock(t *testing.T) {
 			},
 			args: args{
 				lockDuration: 1 * time.Second,
-				instanceIDs:  database.StringArray{"instanceID"},
+				instanceIDs:  database.TextArray[string]{"instanceID"},
 			},
 		},
 		{
@@ -173,7 +174,7 @@ func TestStatementHandler_renewLock(t *testing.T) {
 			},
 			args: args{
 				lockDuration: 2 * time.Second,
-				instanceIDs:  database.StringArray{"instanceID"},
+				instanceIDs:  database.TextArray[string]{"instanceID"},
 			},
 		},
 		{
@@ -188,7 +189,7 @@ func TestStatementHandler_renewLock(t *testing.T) {
 			},
 			args: args{
 				lockDuration: 3 * time.Second,
-				instanceIDs:  database.StringArray{"instanceID"},
+				instanceIDs:  database.TextArray[string]{"instanceID"},
 			},
 		},
 		{
@@ -209,7 +210,7 @@ func TestStatementHandler_renewLock(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, mock, err := sqlmock.New()
+			client, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -283,7 +284,7 @@ func TestStatementHandler_Unlock(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, mock, err := sqlmock.New()
+			client, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 			if err != nil {
 				t.Fatal(err)
 			}

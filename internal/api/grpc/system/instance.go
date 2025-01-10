@@ -3,7 +3,6 @@ package system
 import (
 	"context"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
 	instance_grpc "github.com/zitadel/zitadel/internal/api/grpc/instance"
 	"github.com/zitadel/zitadel/internal/api/grpc/member"
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
@@ -98,12 +97,12 @@ func (s *Server) ListIAMMembers(ctx context.Context, req *system_pb.ListIAMMembe
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.query.IAMMembers(ctx, queries, false)
+	res, err := s.query.IAMMembers(ctx, queries)
 	if err != nil {
 		return nil, err
 	}
 	return &system_pb.ListIAMMembersResponse{
-		Details: object.ToListDetails(res.Count, res.Sequence, res.Timestamp),
+		Details: object.ToListDetails(res.Count, res.Sequence, res.LastRun),
 		//TODO: resource owner of user of the member instead of the membership resource owner
 		Result: member.MembersToPb("", res.Members),
 	}, nil
@@ -146,17 +145,11 @@ func (s *Server) ListDomains(ctx context.Context, req *system_pb.ListDomainsRequ
 	}
 	return &system_pb.ListDomainsResponse{
 		Result:  instance_grpc.DomainsToPb(domains.Domains),
-		Details: object.ToListDetails(domains.Count, domains.Sequence, domains.Timestamp),
+		Details: object.ToListDetails(domains.Count, domains.Sequence, domains.LastRun),
 	}, nil
 }
 
 func (s *Server) AddDomain(ctx context.Context, req *system_pb.AddDomainRequest) (*system_pb.AddDomainResponse, error) {
-	instance, err := s.query.Instance(ctx, true)
-	if err != nil {
-		return nil, err
-	}
-	ctx = authz.WithInstance(ctx, instance)
-
 	details, err := s.command.AddInstanceDomain(ctx, req.Domain)
 	if err != nil {
 		return nil, err

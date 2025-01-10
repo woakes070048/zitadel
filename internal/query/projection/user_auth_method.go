@@ -4,17 +4,17 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
+	old_handler "github.com/zitadel/zitadel/internal/eventstore/handler"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
-	UserAuthMethodTable = "projections.user_auth_methods4"
+	UserAuthMethodTable = "projections.user_auth_methods5"
 
 	UserAuthMethodUserIDCol        = "user_id"
 	UserAuthMethodTypeCol          = "method_type"
@@ -26,45 +26,45 @@ const (
 	UserAuthMethodInstanceIDCol    = "instance_id"
 	UserAuthMethodStateCol         = "state"
 	UserAuthMethodNameCol          = "name"
-	UserAuthMethodOwnerRemovedCol  = "owner_removed"
+	UserAuthMethodDomainCol        = "domain"
 )
 
-type userAuthMethodProjection struct {
-	crdb.StatementHandler
+type userAuthMethodProjection struct{}
+
+func newUserAuthMethodProjection(ctx context.Context, config handler.Config) *handler.Handler {
+	return handler.NewHandler(ctx, &config, new(userAuthMethodProjection))
 }
 
-func newUserAuthMethodProjection(ctx context.Context, config crdb.StatementHandlerConfig) *userAuthMethodProjection {
-	p := new(userAuthMethodProjection)
-	config.ProjectionName = UserAuthMethodTable
-	config.Reducers = p.reducers()
-	config.InitCheck = crdb.NewTableCheck(
-		crdb.NewTable([]*crdb.Column{
-			crdb.NewColumn(UserAuthMethodUserIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserAuthMethodTypeCol, crdb.ColumnTypeEnum),
-			crdb.NewColumn(UserAuthMethodTokenIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserAuthMethodCreationDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(UserAuthMethodChangeDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(UserAuthMethodSequenceCol, crdb.ColumnTypeInt64),
-			crdb.NewColumn(UserAuthMethodStateCol, crdb.ColumnTypeEnum),
-			crdb.NewColumn(UserAuthMethodResourceOwnerCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserAuthMethodInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserAuthMethodNameCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserAuthMethodOwnerRemovedCol, crdb.ColumnTypeBool, crdb.Default(false)),
+func (*userAuthMethodProjection) Name() string {
+	return UserAuthMethodTable
+}
+
+func (*userAuthMethodProjection) Init() *old_handler.Check {
+	return handler.NewTableCheck(
+		handler.NewTable([]*handler.InitColumn{
+			handler.NewColumn(UserAuthMethodUserIDCol, handler.ColumnTypeText),
+			handler.NewColumn(UserAuthMethodTypeCol, handler.ColumnTypeEnum),
+			handler.NewColumn(UserAuthMethodTokenIDCol, handler.ColumnTypeText),
+			handler.NewColumn(UserAuthMethodCreationDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(UserAuthMethodChangeDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(UserAuthMethodSequenceCol, handler.ColumnTypeInt64),
+			handler.NewColumn(UserAuthMethodStateCol, handler.ColumnTypeEnum),
+			handler.NewColumn(UserAuthMethodResourceOwnerCol, handler.ColumnTypeText),
+			handler.NewColumn(UserAuthMethodInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(UserAuthMethodNameCol, handler.ColumnTypeText),
+			handler.NewColumn(UserAuthMethodDomainCol, handler.ColumnTypeText, handler.Nullable()),
 		},
-			crdb.NewPrimaryKey(UserAuthMethodInstanceIDCol, UserAuthMethodUserIDCol, UserAuthMethodTypeCol, UserAuthMethodTokenIDCol),
-			crdb.WithIndex(crdb.NewIndex("resource_owner", []string{UserAuthMethodResourceOwnerCol})),
-			crdb.WithIndex(crdb.NewIndex("owner_removed", []string{UserAuthMethodOwnerRemovedCol})),
+			handler.NewPrimaryKey(UserAuthMethodInstanceIDCol, UserAuthMethodUserIDCol, UserAuthMethodTypeCol, UserAuthMethodTokenIDCol),
+			handler.WithIndex(handler.NewIndex("resource_owner", []string{UserAuthMethodResourceOwnerCol})),
 		),
 	)
-	p.StatementHandler = crdb.NewStatementHandler(ctx, config)
-	return p
 }
 
-func (p *userAuthMethodProjection) reducers() []handler.AggregateReducer {
+func (p *userAuthMethodProjection) Reducers() []handler.AggregateReducer {
 	return []handler.AggregateReducer{
 		{
 			Aggregate: user.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  user.HumanPasswordlessTokenAddedType,
 					Reduce: p.reduceInitAuthMethod,
@@ -129,7 +129,7 @@ func (p *userAuthMethodProjection) reducers() []handler.AggregateReducer {
 		},
 		{
 			Aggregate: org.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  org.OrgRemovedEventType,
 					Reduce: p.reduceOwnerRemoved,
@@ -138,7 +138,7 @@ func (p *userAuthMethodProjection) reducers() []handler.AggregateReducer {
 		},
 		{
 			Aggregate: instance.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  instance.InstanceRemovedEventType,
 					Reduce: reduceInstanceRemovedHelper(UserAuthMethodInstanceIDCol),
@@ -150,21 +150,38 @@ func (p *userAuthMethodProjection) reducers() []handler.AggregateReducer {
 
 func (p *userAuthMethodProjection) reduceInitAuthMethod(event eventstore.Event) (*handler.Statement, error) {
 	tokenID := ""
+	var rpID *string
 	var methodType domain.UserAuthMethodType
 	switch e := event.(type) {
 	case *user.HumanPasswordlessAddedEvent:
 		methodType = domain.UserAuthMethodTypePasswordless
 		tokenID = e.WebAuthNTokenID
+		rpID = &e.RPID
 	case *user.HumanU2FAddedEvent:
 		methodType = domain.UserAuthMethodTypeU2F
 		tokenID = e.WebAuthNTokenID
+		rpID = &e.RPID
 	case *user.HumanOTPAddedEvent:
 		methodType = domain.UserAuthMethodTypeTOTP
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanPasswordlessTokenAddedType, user.HumanU2FTokenAddedType})
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanPasswordlessTokenAddedType, user.HumanU2FTokenAddedType})
 	}
-
-	return crdb.NewUpsertStatement(
+	cols := []handler.Column{
+		handler.NewCol(UserAuthMethodTokenIDCol, tokenID),
+		handler.NewCol(UserAuthMethodCreationDateCol, handler.OnlySetValueOnInsert(UserAuthMethodTable, event.CreatedAt())),
+		handler.NewCol(UserAuthMethodChangeDateCol, event.CreatedAt()),
+		handler.NewCol(UserAuthMethodResourceOwnerCol, event.Aggregate().ResourceOwner),
+		handler.NewCol(UserAuthMethodInstanceIDCol, event.Aggregate().InstanceID),
+		handler.NewCol(UserAuthMethodUserIDCol, event.Aggregate().ID),
+		handler.NewCol(UserAuthMethodSequenceCol, event.Sequence()),
+		handler.NewCol(UserAuthMethodStateCol, domain.MFAStateNotReady),
+		handler.NewCol(UserAuthMethodTypeCol, methodType),
+		handler.NewCol(UserAuthMethodNameCol, ""),
+	}
+	if rpID != nil {
+		cols = append(cols, handler.NewCol(UserAuthMethodDomainCol, rpID))
+	}
+	return handler.NewUpsertStatement(
 		event,
 		[]handler.Column{
 			handler.NewCol(UserAuthMethodInstanceIDCol, nil),
@@ -172,18 +189,7 @@ func (p *userAuthMethodProjection) reduceInitAuthMethod(event eventstore.Event) 
 			handler.NewCol(UserAuthMethodTypeCol, nil),
 			handler.NewCol(UserAuthMethodTokenIDCol, nil),
 		},
-		[]handler.Column{
-			handler.NewCol(UserAuthMethodTokenIDCol, tokenID),
-			handler.NewCol(UserAuthMethodCreationDateCol, event.CreationDate()),
-			handler.NewCol(UserAuthMethodChangeDateCol, event.CreationDate()),
-			handler.NewCol(UserAuthMethodResourceOwnerCol, event.Aggregate().ResourceOwner),
-			handler.NewCol(UserAuthMethodInstanceIDCol, event.Aggregate().InstanceID),
-			handler.NewCol(UserAuthMethodUserIDCol, event.Aggregate().ID),
-			handler.NewCol(UserAuthMethodSequenceCol, event.Sequence()),
-			handler.NewCol(UserAuthMethodStateCol, domain.MFAStateNotReady),
-			handler.NewCol(UserAuthMethodTypeCol, methodType),
-			handler.NewCol(UserAuthMethodNameCol, ""),
-		},
+		cols,
 	), nil
 }
 
@@ -203,15 +209,14 @@ func (p *userAuthMethodProjection) reduceActivateEvent(event eventstore.Event) (
 		name = e.WebAuthNTokenName
 	case *user.HumanOTPVerifiedEvent:
 		methodType = domain.UserAuthMethodTypeTOTP
-
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanPasswordlessTokenAddedType, user.HumanU2FTokenAddedType})
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanPasswordlessTokenAddedType, user.HumanU2FTokenAddedType})
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		event,
 		[]handler.Column{
-			handler.NewCol(UserAuthMethodChangeDateCol, event.CreationDate()),
+			handler.NewCol(UserAuthMethodChangeDateCol, event.CreatedAt()),
 			handler.NewCol(UserAuthMethodSequenceCol, event.Sequence()),
 			handler.NewCol(UserAuthMethodNameCol, name),
 			handler.NewCol(UserAuthMethodStateCol, domain.MFAStateReady),
@@ -234,15 +239,15 @@ func (p *userAuthMethodProjection) reduceAddAuthMethod(event eventstore.Event) (
 	case *user.HumanOTPEmailAddedEvent:
 		methodType = domain.UserAuthMethodTypeOTPEmail
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-DS4g3", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanOTPSMSAddedType, user.HumanOTPEmailAddedType})
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-DS4g3", "reduce.wrong.event.type %v", []eventstore.EventType{user.HumanOTPSMSAddedType, user.HumanOTPEmailAddedType})
 	}
 
-	return crdb.NewCreateStatement(
+	return handler.NewCreateStatement(
 		event,
 		[]handler.Column{
 			handler.NewCol(UserAuthMethodTokenIDCol, ""),
-			handler.NewCol(UserAuthMethodCreationDateCol, event.CreationDate()),
-			handler.NewCol(UserAuthMethodChangeDateCol, event.CreationDate()),
+			handler.NewCol(UserAuthMethodCreationDateCol, event.CreatedAt()),
+			handler.NewCol(UserAuthMethodChangeDateCol, event.CreatedAt()),
 			handler.NewCol(UserAuthMethodResourceOwnerCol, event.Aggregate().ResourceOwner),
 			handler.NewCol(UserAuthMethodInstanceIDCol, event.Aggregate().InstanceID),
 			handler.NewCol(UserAuthMethodUserIDCol, event.Aggregate().ID),
@@ -273,7 +278,7 @@ func (p *userAuthMethodProjection) reduceRemoveAuthMethod(event eventstore.Event
 		methodType = domain.UserAuthMethodTypeOTPEmail
 
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v",
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-f92f", "reduce.wrong.event.type %v",
 			[]eventstore.EventType{user.HumanPasswordlessTokenAddedType, user.HumanU2FTokenAddedType, user.HumanMFAOTPRemovedType,
 				user.HumanOTPSMSRemovedType, user.HumanPhoneRemovedType, user.HumanOTPEmailRemovedType})
 	}
@@ -286,7 +291,7 @@ func (p *userAuthMethodProjection) reduceRemoveAuthMethod(event eventstore.Event
 	if tokenID != "" {
 		conditions = append(conditions, handler.NewCond(UserAuthMethodTokenIDCol, tokenID))
 	}
-	return crdb.NewDeleteStatement(
+	return handler.NewDeleteStatement(
 		event,
 		conditions,
 	), nil
@@ -295,10 +300,10 @@ func (p *userAuthMethodProjection) reduceRemoveAuthMethod(event eventstore.Event
 func (p *userAuthMethodProjection) reduceOwnerRemoved(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*org.OrgRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-FwDZ8", "reduce.wrong.event.type %s", org.OrgRemovedEventType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-FwDZ8", "reduce.wrong.event.type %s", org.OrgRemovedEventType)
 	}
 
-	return crdb.NewDeleteStatement(
+	return handler.NewDeleteStatement(
 		e,
 		[]handler.Condition{
 			handler.NewCond(UserAuthMethodInstanceIDCol, e.Aggregate().InstanceID),

@@ -1,17 +1,19 @@
 package types
 
 import (
+	"context"
 	"strings"
 
+	http_utils "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/api/ui/login"
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/query"
 )
 
-func (notify Notify) SendPasswordCode(user *query.NotifyUser, origin, code, urlTmpl string) error {
+func (notify Notify) SendPasswordCode(ctx context.Context, user *query.NotifyUser, code, urlTmpl, authRequestID string) error {
 	var url string
 	if urlTmpl == "" {
-		url = login.InitPasswordLink(origin, user.ID, code, user.ResourceOwner)
+		url = login.InitPasswordLink(http_utils.DomainContext(ctx).Origin(), user.ID, code, user.ResourceOwner, authRequestID)
 	} else {
 		var buf strings.Builder
 		if err := domain.RenderConfirmURLTemplate(&buf, urlTmpl, user.ID, code, user.ResourceOwner); err != nil {
