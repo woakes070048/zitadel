@@ -1,6 +1,7 @@
 package object
 
 import (
+	"context"
 	"time"
 
 	"github.com/dop251/goja"
@@ -44,6 +45,8 @@ type userGrant struct {
 
 	ProjectId   string
 	ProjectName string
+
+	GetOrgMetadata func(goja.FunctionCall) goja.Value
 }
 
 func AppendGrantFunc(userGrants *UserGrants) func(c *actions.FieldConfig) func(call goja.FunctionCall) goja.Value {
@@ -58,14 +61,15 @@ func AppendGrantFunc(userGrants *UserGrants) func(c *actions.FieldConfig) func(c
 	}
 }
 
-func UserGrantsFromQuery(c *actions.FieldConfig, userGrants *query.UserGrants) goja.Value {
+func UserGrantsFromQuery(ctx context.Context, queries *query.Queries, c *actions.FieldConfig, userGrants *query.UserGrants) goja.Value {
 	if userGrants == nil {
 		return c.Runtime.ToValue(nil)
 	}
+	orgMetadata := make(map[string]goja.Value)
 	grantList := &userGrantList{
 		Count:     userGrants.Count,
 		Sequence:  userGrants.Sequence,
-		Timestamp: userGrants.Timestamp,
+		Timestamp: userGrants.LastRun,
 		Grants:    make([]*userGrant, len(userGrants.UserGrants)),
 	}
 
@@ -84,6 +88,51 @@ func UserGrantsFromQuery(c *actions.FieldConfig, userGrants *query.UserGrants) g
 			UserGrantResourceOwnerName: grant.OrgName,
 			ProjectId:                  grant.ProjectID,
 			ProjectName:                grant.ProjectName,
+			GetOrgMetadata: func(call goja.FunctionCall) goja.Value {
+				if md, ok := orgMetadata[grant.ResourceOwner]; ok {
+					return md
+				}
+				orgMetadata[grant.ResourceOwner] = GetOrganizationMetadata(ctx, queries, c, grant.ResourceOwner)
+				return orgMetadata[grant.ResourceOwner]
+			},
+		}
+	}
+
+	return c.Runtime.ToValue(grantList)
+}
+
+func UserGrantsFromSlice(ctx context.Context, queries *query.Queries, c *actions.FieldConfig, userGrants []query.UserGrant) goja.Value {
+	if userGrants == nil {
+		return c.Runtime.ToValue(nil)
+	}
+	orgMetadata := make(map[string]goja.Value)
+	grantList := &userGrantList{
+		Count:  uint64(len(userGrants)),
+		Grants: make([]*userGrant, len(userGrants)),
+	}
+
+	for i, grant := range userGrants {
+		grantList.Grants[i] = &userGrant{
+			Id:                         grant.ID,
+			ProjectGrantId:             grant.GrantID,
+			State:                      grant.State,
+			CreationDate:               grant.CreationDate,
+			ChangeDate:                 grant.ChangeDate,
+			Sequence:                   grant.Sequence,
+			UserId:                     grant.UserID,
+			Roles:                      grant.Roles,
+			UserResourceOwner:          grant.UserResourceOwner,
+			UserGrantResourceOwner:     grant.ResourceOwner,
+			UserGrantResourceOwnerName: grant.OrgName,
+			ProjectId:                  grant.ProjectID,
+			ProjectName:                grant.ProjectName,
+			GetOrgMetadata: func(goja.FunctionCall) goja.Value {
+				if md, ok := orgMetadata[grant.ResourceOwner]; ok {
+					return md
+				}
+				orgMetadata[grant.ResourceOwner] = GetOrganizationMetadata(ctx, queries, c, grant.ResourceOwner)
+				return orgMetadata[grant.ResourceOwner]
+			},
 		}
 	}
 

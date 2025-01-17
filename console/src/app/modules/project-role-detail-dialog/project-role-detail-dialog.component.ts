@@ -1,9 +1,6 @@
 import { Component, Inject } from '@angular/core';
 import { AbstractControl, UntypedFormControl, UntypedFormGroup } from '@angular/forms';
-import {
-  MatLegacyDialogRef as MatDialogRef,
-  MAT_LEGACY_DIALOG_DATA as MAT_DIALOG_DATA,
-} from '@angular/material/legacy-dialog';
+import { MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
 import { requiredValidator } from '../form-field/validators/validators';
@@ -34,9 +31,9 @@ export class ProjectRoleDetailDialogComponent {
   }
 
   submitForm(): void {
-    if (this.formGroup.valid && this.key?.value && this.group?.value && this.displayName?.value) {
+    if (this.formGroup.valid && this.key?.value && this.displayName?.value) {
       this.mgmtService
-        .updateProjectRole(this.projectId, this.key.value, this.displayName.value, this.group.value)
+        .updateProjectRole(this.projectId, this.key.value, this.displayName.value, this.group?.value)
         .then(() => {
           this.toast.showInfo('PROJECT.TOAST.ROLECHANGED', true);
           this.dialogRef.close(true);

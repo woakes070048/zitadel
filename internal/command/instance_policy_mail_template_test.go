@@ -5,14 +5,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/policy"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_AddDefaultMailTemplatePolicy(t *testing.T) {
@@ -45,7 +45,7 @@ func TestCommandSide_AddDefaultMailTemplatePolicy(t *testing.T) {
 				policy: &domain.MailTemplate{},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -70,7 +70,7 @@ func TestCommandSide_AddDefaultMailTemplatePolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
@@ -80,15 +80,11 @@ func TestCommandSide_AddDefaultMailTemplatePolicy(t *testing.T) {
 					t,
 					expectFilter(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusherWithInstanceID(
-								"INSTANCE",
-								instance.NewMailTemplateAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									[]byte("template"),
-								),
-							),
-						},
+						instance.NewMailTemplateAddedEvent(
+							authz.WithInstanceID(context.Background(), "INSTANCE"),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							[]byte("template"),
+						),
 					),
 				),
 			},
@@ -159,7 +155,7 @@ func TestCommandSide_ChangeDefaultMailTemplatePolicy(t *testing.T) {
 				policy: &domain.MailTemplate{},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -177,7 +173,7 @@ func TestCommandSide_ChangeDefaultMailTemplatePolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -202,7 +198,7 @@ func TestCommandSide_ChangeDefaultMailTemplatePolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -219,11 +215,7 @@ func TestCommandSide_ChangeDefaultMailTemplatePolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								newDefaultMailTemplatePolicyChangedEvent(context.Background(), []byte("template-change")),
-							),
-						},
+						newDefaultMailTemplatePolicyChangedEvent(context.Background(), []byte("template-change")),
 					),
 				),
 			},
@@ -238,6 +230,7 @@ func TestCommandSide_ChangeDefaultMailTemplatePolicy(t *testing.T) {
 					ObjectRoot: models.ObjectRoot{
 						AggregateID:   "INSTANCE",
 						ResourceOwner: "INSTANCE",
+						InstanceID:    "INSTANCE",
 					},
 					Template: []byte("template-change"),
 				},

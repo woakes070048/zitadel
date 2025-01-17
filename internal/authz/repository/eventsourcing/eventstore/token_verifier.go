@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/muhlemmer/gu"
 	"github.com/zitadel/logging"
-	"github.com/zitadel/oidc/v2/pkg/oidc"
-	"github.com/zitadel/oidc/v2/pkg/op"
-	"gopkg.in/square/go-jose.v2"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/op"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	http_util "github.com/zitadel/zitadel/internal/api/http"
@@ -18,19 +20,18 @@ import (
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
-	v1 "github.com/zitadel/zitadel/internal/eventstore/v1"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
 	usr_model "github.com/zitadel/zitadel/internal/user/model"
 	usr_view "github.com/zitadel/zitadel/internal/user/repository/view"
 	"github.com/zitadel/zitadel/internal/user/repository/view/model"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type TokenVerifierRepo struct {
 	TokenVerificationKey crypto.EncryptionAlgorithm
-	Eventstore           v1.Eventstore
+	Eventstore           *eventstore.Eventstore
 	View                 *view.View
 	Query                *query.Queries
 	ExternalSecure       bool
@@ -45,27 +46,30 @@ func (repo *TokenVerifierRepo) tokenByID(ctx context.Context, tokenID, userID st
 	defer func() { span.EndWithError(err) }()
 
 	instanceID := authz.GetInstance(ctx).InstanceID()
+
+	// always load the latest sequence first, so in case the token was not found by id,
+	// the sequence will be equal or lower than the actual projection and no events are lost
+	sequence, err := repo.View.GetLatestState(ctx)
+	logging.WithFields("instanceID", instanceID, "userID", userID, "tokenID", tokenID).
+		OnError(err).
+		Errorf("could not get current sequence for token check")
+
 	token, viewErr := repo.View.TokenByIDs(tokenID, userID, instanceID)
-	if viewErr != nil && !caos_errs.IsNotFound(viewErr) {
+	if viewErr != nil && !zerrors.IsNotFound(viewErr) {
 		return nil, viewErr
 	}
-	if caos_errs.IsNotFound(viewErr) {
-		sequence, err := repo.View.GetLatestTokenSequence(ctx, instanceID)
-		logging.WithFields("instanceID", instanceID, "userID", userID, "tokenID", tokenID).
-			OnError(err).
-			Errorf("could not get current sequence for token check")
-
+	if zerrors.IsNotFound(viewErr) {
 		token = new(model.TokenView)
 		token.ID = tokenID
 		token.UserID = userID
 		if sequence != nil {
-			token.Sequence = sequence.CurrentSequence
+			token.ChangeDate = sequence.EventCreatedAt
 		}
 	}
 
-	events, esErr := repo.getUserEvents(ctx, userID, instanceID, token.Sequence, token.GetRelevantEventTypes())
-	if caos_errs.IsNotFound(viewErr) && len(events) == 0 {
-		return nil, caos_errs.ThrowNotFound(nil, "EVENT-4T90g", "Errors.Token.NotFound")
+	events, esErr := repo.getUserEvents(ctx, userID, instanceID, token.ChangeDate, token.GetRelevantEventTypes())
+	if zerrors.IsNotFound(viewErr) && len(events) == 0 {
+		return nil, zerrors.ThrowNotFound(nil, "EVENT-4T90g", "Errors.Token.NotFound")
 	}
 
 	if esErr != nil {
@@ -80,7 +84,7 @@ func (repo *TokenVerifierRepo) tokenByID(ctx context.Context, tokenID, userID st
 		}
 	}
 	if !token.Expiration.After(time.Now().UTC()) || token.Deactivated {
-		return nil, caos_errs.ThrowNotFound(nil, "EVENT-5Bm9s", "Errors.Token.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "EVENT-5Bm9s", "Errors.Token.NotFound")
 	}
 	return model.TokenViewToModel(token), nil
 }
@@ -91,11 +95,10 @@ func (repo *TokenVerifierRepo) VerifyAccessToken(ctx context.Context, tokenStrin
 
 	tokenID, subject, ok := repo.getTokenIDAndSubject(ctx, tokenString)
 	if !ok {
-		return "", "", "", "", "", caos_errs.ThrowUnauthenticated(nil, "APP-Reb32", "invalid token")
+		return "", "", "", "", "", zerrors.ThrowUnauthenticated(nil, "APP-Reb32", "invalid token")
 	}
 	if strings.HasPrefix(tokenID, command.IDPrefixV2) {
-		userID, clientID, resourceOwner, err = repo.verifyAccessTokenV2(ctx, tokenID, verifierClientID, projectID)
-		return
+		return repo.verifyAccessTokenV2(ctx, tokenID, verifierClientID, projectID)
 	}
 	if sessionID, ok := strings.CutPrefix(tokenID, authz.SessionTokenPrefix); ok {
 		userID, clientID, resourceOwner, err = repo.verifySessionToken(ctx, sessionID, tokenString)
@@ -104,18 +107,21 @@ func (repo *TokenVerifierRepo) VerifyAccessToken(ctx context.Context, tokenStrin
 	return repo.verifyAccessTokenV1(ctx, tokenID, subject, verifierClientID, projectID)
 }
 
-func (repo *TokenVerifierRepo) verifyAccessTokenV1(ctx context.Context, tokenID, subject, verifierClientID, projectID string) (userID string, agentID string, clientID, prefLang, resourceOwner string, err error) {
+func (repo *TokenVerifierRepo) verifyAccessTokenV1(ctx context.Context, tokenID, subject, verifierClientID, projectID string) (userID, agentID, clientID, prefLang, resourceOwner string, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
-	_, tokenSpan := tracing.NewNamedSpan(ctx, "token")
+	_, tokenSpan := tracing.NewNamedSpan(ctx, "tokenByID")
 	token, err := repo.tokenByID(ctx, tokenID, subject)
 	tokenSpan.EndWithError(err)
 	if err != nil {
-		return "", "", "", "", "", caos_errs.ThrowUnauthenticated(err, "APP-BxUSiL", "invalid token")
+		return "", "", "", "", "", zerrors.ThrowUnauthenticated(err, "APP-BxUSiL", "invalid token")
+	}
+	if token.Actor != nil {
+		return "", "", "", "", "", zerrors.ThrowPermissionDenied(nil, "APP-wai8O", "Errors.TokenExchange.Token.NotForAPI")
 	}
 	if !token.Expiration.After(time.Now().UTC()) {
-		return "", "", "", "", "", caos_errs.ThrowUnauthenticated(err, "APP-k9KS0", "invalid token")
+		return "", "", "", "", "", zerrors.ThrowUnauthenticated(err, "APP-k9KS0", "invalid token")
 	}
 	if token.IsPAT {
 		return token.UserID, "", "", "", token.ResourceOwner, nil
@@ -126,30 +132,39 @@ func (repo *TokenVerifierRepo) verifyAccessTokenV1(ctx context.Context, tokenID,
 	return token.UserID, token.UserAgentID, token.ApplicationID, token.PreferredLanguage, token.ResourceOwner, nil
 }
 
-func (repo *TokenVerifierRepo) verifyAccessTokenV2(ctx context.Context, token, verifierClientID, projectID string) (userID, clientID, resourceOwner string, err error) {
+func (repo *TokenVerifierRepo) verifyAccessTokenV2(ctx context.Context, token, verifierClientID, projectID string) (userID, agentID, clientID, prefLang, resourceOwner string, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	activeToken, err := repo.Query.ActiveAccessTokenByToken(ctx, token)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
+	}
+	if activeToken.Actor != nil {
+		return "", "", "", "", "", zerrors.ThrowPermissionDenied(nil, "APP-Shi0J", "Errors.TokenExchange.Token.NotForAPI")
 	}
 	if err = verifyAudience(activeToken.Audience, verifierClientID, projectID); err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
 	}
 	if err = repo.checkAuthentication(ctx, activeToken.AuthMethods, activeToken.UserID); err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
 	}
-	return activeToken.UserID, activeToken.ClientID, activeToken.ResourceOwner, nil
+	prefLang = gu.Value(activeToken.PreferredLanguage).String()
+	agentID = gu.Value(gu.Value(activeToken.UserAgent).FingerprintID)
+
+	return activeToken.UserID, agentID, activeToken.ClientID, prefLang, activeToken.ResourceOwner, nil
 }
 
 func (repo *TokenVerifierRepo) verifySessionToken(ctx context.Context, sessionID, token string) (userID, clientID, resourceOwner string, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
-	session, err := repo.Query.SessionByID(ctx, true, sessionID, token)
+	session, err := repo.Query.SessionByID(ctx, true, sessionID, token, nil)
 	if err != nil {
 		return "", "", "", err
+	}
+	if !session.Expiration.IsZero() && session.Expiration.Before(time.Now()) {
+		return "", "", "", zerrors.ThrowPermissionDenied(nil, "AUTHZ-EGDo3", "session expired")
 	}
 	if err = repo.checkAuthentication(ctx, authMethodsFromSession(session), session.UserFactor.UserID); err != nil {
 		return "", "", "", err
@@ -158,20 +173,27 @@ func (repo *TokenVerifierRepo) verifySessionToken(ctx context.Context, sessionID
 }
 
 // checkAuthentication ensures the session or token was authenticated (at least a single [domain.UserAuthMethodType]).
-// It will also check if there was a multi factor authentication, if either MFA is forced by the login policy or if the user has set up any
+// It will also check if there was a multi-factor authentication, if either MFA is forced by the login policy or if the user has set up any second factor
 func (repo *TokenVerifierRepo) checkAuthentication(ctx context.Context, authMethods []domain.UserAuthMethodType, userID string) error {
 	if len(authMethods) == 0 {
-		return caos_errs.ThrowPermissionDenied(nil, "AUTHZ-Kl3p0", "authentication required")
+		return zerrors.ThrowPermissionDenied(nil, "AUTHZ-Kl3p0", "authentication required")
 	}
 	if domain.HasMFA(authMethods) {
 		return nil
 	}
-	availableAuthMethods, forceMFA, forceMFALocalOnly, err := repo.Query.ListUserAuthMethodTypesRequired(setCallerCtx(ctx, userID), userID, false)
+	requirements, err := repo.Query.ListUserAuthMethodTypesRequired(setCallerCtx(ctx, userID), userID)
 	if err != nil {
 		return err
 	}
-	if domain.RequiresMFA(forceMFA, forceMFALocalOnly, hasIDPAuthentication(authMethods)) || domain.HasMFA(availableAuthMethods) {
-		return caos_errs.ThrowPermissionDenied(nil, "AUTHZ-Kl3p0", "mfa required")
+	if requirements.UserType == domain.UserTypeMachine {
+		return nil
+	}
+	if domain.RequiresMFA(
+		requirements.ForceMFA,
+		requirements.ForceMFALocalOnly,
+		!hasIDPAuthentication(authMethods),
+	) {
+		return zerrors.ThrowPermissionDenied(nil, "AUTHZ-Kl3p0", "mfa required")
 	}
 	return nil
 }
@@ -242,14 +264,14 @@ func (repo *TokenVerifierRepo) VerifierClientID(ctx context.Context, appName str
 	return clientID, app.ProjectID, nil
 }
 
-func (repo *TokenVerifierRepo) getUserEvents(ctx context.Context, userID, instanceID string, sequence uint64, eventTypes []models.EventType) (_ []*models.Event, err error) {
+func (repo *TokenVerifierRepo) getUserEvents(ctx context.Context, userID, instanceID string, changeDate time.Time, eventTypes []eventstore.EventType) (_ []eventstore.Event, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
-	query, err := usr_view.UserByIDQuery(userID, instanceID, sequence, eventTypes)
+	query, err := usr_view.UserByIDQuery(userID, instanceID, changeDate, eventTypes)
 	if err != nil {
 		return nil, err
 	}
-	return repo.Eventstore.FilterEvents(ctx, query)
+	return repo.Eventstore.Filter(ctx, query)
 }
 
 // getTokenIDAndSubject returns the TokenID and Subject of both opaque tokens and JWTs
@@ -258,9 +280,11 @@ func (repo *TokenVerifierRepo) getTokenIDAndSubject(ctx context.Context, accessT
 	// let's try opaque first:
 	tokenIDSubject, err := repo.decryptAccessToken(accessToken)
 	if err != nil {
+		logging.WithError(err).Warn("token verifier repo: decrypt access token")
 		// if decryption did not work, it might be a JWT
 		accessTokenClaims, err := op.VerifyAccessToken[*oidc.AccessTokenClaims](ctx, accessToken, repo.jwtTokenVerifier(ctx))
 		if err != nil {
+			logging.WithError(err).Warn("token verifier repo: verify JWT access token")
 			return "", "", false
 		}
 		return accessTokenClaims.JWTID, accessTokenClaims.Subject, true
@@ -272,20 +296,19 @@ func (repo *TokenVerifierRepo) getTokenIDAndSubject(ctx context.Context, accessT
 	return splitToken[0], splitToken[1], true
 }
 
-func (repo *TokenVerifierRepo) jwtTokenVerifier(ctx context.Context) op.AccessTokenVerifier {
+func (repo *TokenVerifierRepo) jwtTokenVerifier(ctx context.Context) *op.AccessTokenVerifier {
 	keySet := &openIDKeySet{repo.Query}
-	issuer := http_util.BuildOrigin(authz.GetInstance(ctx).RequestedHost(), repo.ExternalSecure)
-	return op.NewAccessTokenVerifier(issuer, keySet)
+	return op.NewAccessTokenVerifier(http_util.DomainContext(ctx).Origin(), keySet)
 }
 
 func (repo *TokenVerifierRepo) decryptAccessToken(token string) (string, error) {
 	tokenData, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return "", caos_errs.ThrowUnauthenticated(nil, "APP-ASdgg", "invalid token")
+		return "", zerrors.ThrowUnauthenticated(nil, "APP-ASdgg", "invalid token")
 	}
 	tokenIDSubject, err := repo.TokenVerificationKey.DecryptString(tokenData, repo.TokenVerificationKey.EncryptionKeyID())
 	if err != nil {
-		return "", caos_errs.ThrowUnauthenticated(nil, "APP-8EF0zZ", "invalid token")
+		return "", zerrors.ThrowUnauthenticated(nil, "APP-8EF0zZ", "invalid token")
 	}
 	return tokenIDSubject, nil
 }
@@ -296,7 +319,7 @@ func verifyAudience(audience []string, verifierClientID, projectID string) error
 			return nil
 		}
 	}
-	return caos_errs.ThrowUnauthenticated(nil, "APP-Zxfako", "invalid audience")
+	return zerrors.ThrowUnauthenticated(nil, "APP-Zxfako", "invalid audience")
 }
 
 type openIDKeySet struct {
@@ -305,28 +328,39 @@ type openIDKeySet struct {
 
 // VerifySignature implements the oidc.KeySet interface
 // providing an implementation for the keys retrieved directly from Queries
-func (o *openIDKeySet) VerifySignature(ctx context.Context, jws *jose.JSONWebSignature) ([]byte, error) {
-	keySet, err := o.Queries.ActivePublicKeys(ctx, time.Now())
+func (o *openIDKeySet) VerifySignature(ctx context.Context, jws *jose.JSONWebSignature) (payload []byte, err error) {
+	keySet := new(jose.JSONWebKeySet)
+	if authz.GetFeatures(ctx).WebKey {
+		keySet, err = o.Queries.GetWebKeySet(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	legacyKeySet, err := o.Queries.ActivePublicKeys(ctx, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("error fetching keys: %w", err)
 	}
+	appendPublicKeysToWebKeySet(keySet, legacyKeySet)
 	keyID, alg := oidc.GetKeyIDAndAlg(jws)
-	key, err := oidc.FindMatchingKey(keyID, oidc.KeyUseSignature, alg, jsonWebKeys(keySet.Keys)...)
+	key, err := oidc.FindMatchingKey(keyID, oidc.KeyUseSignature, alg, keySet.Keys...)
 	if err != nil {
 		return nil, fmt.Errorf("invalid signature: %w", err)
 	}
 	return jws.Verify(&key)
 }
 
-func jsonWebKeys(keys []query.PublicKey) []jose.JSONWebKey {
-	webKeys := make([]jose.JSONWebKey, len(keys))
-	for i, key := range keys {
-		webKeys[i] = jose.JSONWebKey{
+func appendPublicKeysToWebKeySet(keyset *jose.JSONWebKeySet, pubkeys *query.PublicKeys) {
+	if pubkeys == nil || len(pubkeys.Keys) == 0 {
+		return
+	}
+	keyset.Keys = slices.Grow(keyset.Keys, len(pubkeys.Keys))
+
+	for _, key := range pubkeys.Keys {
+		keyset.Keys = append(keyset.Keys, jose.JSONWebKey{
+			Key:       key.Key(),
 			KeyID:     key.ID(),
 			Algorithm: key.Algorithm(),
 			Use:       key.Use().String(),
-			Key:       key.Key(),
-		}
+		})
 	}
-	return webKeys
 }

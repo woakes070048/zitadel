@@ -2,20 +2,20 @@ import { A11yModule } from '@angular/cdk/a11y';
 import { CommonModule } from '@angular/common';
 import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatDialogModule } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
-import { MatLegacyButtonModule as MatButtonModule } from '@angular/material/legacy-button';
-import { MatLegacyCheckboxModule as MatCheckboxModule } from '@angular/material/legacy-checkbox';
-import { MatLegacyChipsModule as MatChipsModule } from '@angular/material/legacy-chips';
-import { MatLegacyDialogModule as MatDialogModule } from '@angular/material/legacy-dialog';
-import { MatLegacyMenuModule as MatMenuModule } from '@angular/material/legacy-menu';
-import { MatLegacyProgressBarModule as MatProgressBarModule } from '@angular/material/legacy-progress-bar';
-import { MatLegacyProgressSpinnerModule as MatProgressSpinnerModule } from '@angular/material/legacy-progress-spinner';
-import { MatLegacyRadioModule as MatRadioModule } from '@angular/material/legacy-radio';
-import { MatLegacySelectModule as MatSelectModule } from '@angular/material/legacy-select';
-import { MatLegacySlideToggleModule as MatSlideToggleModule } from '@angular/material/legacy-slide-toggle';
-import { MatLegacySliderModule as MatSliderModule } from '@angular/material/legacy-slider';
-import { MatLegacyTooltipModule as MatTooltipModule } from '@angular/material/legacy-tooltip';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatRadioModule } from '@angular/material/radio';
+import { MatSelectModule } from '@angular/material/select';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatSliderModule } from '@angular/material/slider';
 import { MatStepperModule } from '@angular/material/stepper';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { CodemirrorModule } from '@ctrl/ngx-codemirror';
 import { TranslateModule } from '@ngx-translate/core';
 import { CopyToClipboardModule } from 'src/app/directives/copy-to-clipboard/copy-to-clipboard.module';
@@ -43,6 +43,10 @@ import { AuthMethodDialogComponent } from './app-detail/auth-method-dialog/auth-
 import { AppSecretDialogComponent } from './app-secret-dialog/app-secret-dialog.component';
 import { AppsRoutingModule } from './apps-routing.module';
 import { RedirectUrisComponent } from './redirect-uris/redirect-uris.component';
+import { IntegrateAppComponent } from './integrate/integrate.component';
+import { OIDCConfigurationComponent } from 'src/app/components/oidc-configuration/oidc-configuration.component';
+import { FrameworkChangeComponent } from 'src/app/components/framework-change/framework-change.component';
+import { CopyRowComponent } from '../../../components/copy-row/copy-row.component';
 
 @NgModule({
   declarations: [
@@ -50,12 +54,15 @@ import { RedirectUrisComponent } from './redirect-uris/redirect-uris.component';
     AppDetailComponent,
     AppSecretDialogComponent,
     RedirectUrisComponent,
+    IntegrateAppComponent,
     AdditionalOriginsComponent,
     AuthMethodDialogComponent,
   ],
   imports: [
+    FrameworkChangeComponent,
     CommonModule,
     A11yModule,
+    OIDCConfigurationComponent,
     RedirectPipeModule,
     NameDialogModule,
     AppRadioModule,
@@ -93,6 +100,7 @@ import { RedirectUrisComponent } from './redirect-uris/redirect-uris.component';
     CodemirrorModule,
     ChangesModule,
     InfoSectionModule,
+    CopyRowComponent,
   ],
   exports: [TranslateModule],
 })

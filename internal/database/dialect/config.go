@@ -4,12 +4,9 @@ import (
 	"database/sql"
 	"sync"
 	"time"
-)
 
-type Config struct {
-	Dialects map[string]interface{} `mapstructure:",remain"`
-	Dialect  Matcher
-}
+	"github.com/jackc/pgx/v5/pgxpool"
+)
 
 type Dialect struct {
 	Matcher   Matcher
@@ -28,8 +25,12 @@ type Matcher interface {
 	Decode([]interface{}) (Connector, error)
 }
 
+const (
+	DefaultAppName = "zitadel"
+)
+
 type Connector interface {
-	Connect(useAdmin bool) (*sql.DB, error)
+	Connect(useAdmin bool) (*sql.DB, *pgxpool.Pool, error)
 	Password() string
 	Database
 }

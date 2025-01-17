@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type MachineKey struct {
@@ -38,11 +38,11 @@ func (key *MachineKey) Detail() ([]byte, error) {
 	if key.Type == AuthNKeyTypeJSON {
 		return key.MarshalJSON()
 	}
-	return nil, errors.ThrowPreconditionFailed(nil, "KEY-dsg52", "Errors.Internal")
+	return nil, zerrors.ThrowPreconditionFailed(nil, "KEY-dsg52", "Errors.Internal")
 }
 
 func (key *MachineKey) MarshalJSON() ([]byte, error) {
-	return MachineKeyMarshalJSON(key.KeyID, key.PrivateKey, key.AggregateID)
+	return MachineKeyMarshalJSON(key.KeyID, key.PrivateKey, key.ExpirationDate, key.AggregateID)
 }
 
 type MachineKeyState int32
@@ -59,16 +59,18 @@ func (f MachineKeyState) Valid() bool {
 	return f >= 0 && f < machineKeyStateCount
 }
 
-func MachineKeyMarshalJSON(keyID string, privateKey []byte, userID string) ([]byte, error) {
+func MachineKeyMarshalJSON(keyID string, privateKey []byte, expirationDate time.Time, userID string) ([]byte, error) {
 	return json.Marshal(struct {
-		Type   string `json:"type"`
-		KeyID  string `json:"keyId"`
-		Key    string `json:"key"`
-		UserID string `json:"userId"`
+		Type           string    `json:"type"`
+		KeyID          string    `json:"keyId"`
+		Key            string    `json:"key"`
+		ExpirationDate time.Time `json:"expirationDate"`
+		UserID         string    `json:"userId"`
 	}{
-		Type:   "serviceaccount",
-		KeyID:  keyID,
-		Key:    string(privateKey),
-		UserID: userID,
+		Type:           "serviceaccount",
+		KeyID:          keyID,
+		Key:            string(privateKey),
+		ExpirationDate: expirationDate,
+		UserID:         userID,
 	})
 }

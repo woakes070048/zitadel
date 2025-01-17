@@ -1,19 +1,8 @@
 import { Injectable } from '@angular/core';
 import { SortDirection } from '@angular/material/sort';
 import { OAuthService } from 'angular-oauth2-oidc';
-import { BehaviorSubject, from, merge, Observable, of, Subject } from 'rxjs';
-import {
-  catchError,
-  distinctUntilChanged,
-  filter,
-  finalize,
-  map,
-  mergeMap,
-  switchMap,
-  take,
-  timeout,
-  withLatestFrom,
-} from 'rxjs/operators';
+import { BehaviorSubject, forkJoin, from, Observable, of, Subject } from 'rxjs';
+import { catchError, distinctUntilChanged, filter, finalize, map, switchMap, timeout, withLatestFrom } from 'rxjs/operators';
 
 import {
   AddMyAuthFactorOTPEmailRequest,
@@ -38,13 +27,10 @@ import {
   GetMyPhoneRequest,
   GetMyPhoneResponse,
   GetMyPrivacyPolicyRequest,
-  GetMyPrivacyPolicyResponse,
   GetMyProfileRequest,
   GetMyProfileResponse,
   GetMyUserRequest,
   GetMyUserResponse,
-  GetSupportedLanguagesRequest,
-  GetSupportedLanguagesResponse,
   ListMyAuthFactorsRequest,
   ListMyAuthFactorsResponse,
   ListMyLinkedIDPsRequest,
@@ -111,12 +97,13 @@ import {
 import { ChangeQuery } from '../proto/generated/zitadel/change_pb';
 import { MetadataQuery } from '../proto/generated/zitadel/metadata_pb';
 import { ListQuery } from '../proto/generated/zitadel/object_pb';
-import { Org, OrgFieldName, OrgQuery } from '../proto/generated/zitadel/org_pb';
-import { LabelPolicy } from '../proto/generated/zitadel/policy_pb';
+import { Org, OrgFieldName, OrgIDQuery, OrgQuery } from '../proto/generated/zitadel/org_pb';
+import { LabelPolicy, PrivacyPolicy } from '../proto/generated/zitadel/policy_pb';
 import { Gender, MembershipQuery, User, WebAuthNVerification } from '../proto/generated/zitadel/user_pb';
 import { GrpcService } from './grpc.service';
 import { StorageKey, StorageLocation, StorageService } from './storage.service';
-import { ThemeService } from './theme.service';
+
+const ORG_LIMIT = 10;
 
 @Injectable({
   providedIn: 'root',
@@ -150,17 +137,23 @@ export class GrpcAuthService {
   >(undefined);
   labelPolicyLoading$: BehaviorSubject<boolean> = new BehaviorSubject<boolean>(true);
 
+  public privacypolicy$!: Observable<PrivacyPolicy.AsObject>;
+  public privacypolicy: BehaviorSubject<PrivacyPolicy.AsObject | undefined> = new BehaviorSubject<
+    PrivacyPolicy.AsObject | undefined
+  >(undefined);
+  privacyPolicyLoading$: BehaviorSubject<boolean> = new BehaviorSubject<boolean>(true);
+
   public zitadelPermissions: BehaviorSubject<string[]> = new BehaviorSubject<string[]>([]);
   public readonly fetchedZitadelPermissions: BehaviorSubject<boolean> = new BehaviorSubject<boolean>(false);
 
-  private cachedOrgs: Org.AsObject[] = [];
+  public cachedOrgs: BehaviorSubject<Org.AsObject[]> = new BehaviorSubject<Org.AsObject[]>([]);
   private cachedLabelPolicies: { [orgId: string]: LabelPolicy.AsObject } = {};
+  private cachedPrivacyPolicies: { [orgId: string]: PrivacyPolicy.AsObject } = {};
 
   constructor(
     private readonly grpcService: GrpcService,
     private oauthService: OAuthService,
     private storage: StorageService,
-    themeService: ThemeService,
   ) {
     this.zitadelPermissions$.subscribe(this.zitadelPermissions);
 
@@ -174,7 +167,6 @@ export class GrpcAuthService {
 
     this.labelpolicy$.subscribe({
       next: (policy) => {
-        themeService.applyLabelPolicy(policy);
         this.labelpolicy.next(policy);
         this.labelPolicyLoading$.next(false);
       },
@@ -184,25 +176,40 @@ export class GrpcAuthService {
       },
     });
 
-    this.user = merge(
-      of(this.oauthService.getAccessToken()).pipe(filter((token) => (token ? true : false))),
+    this.privacypolicy$ = this.activeOrgChanged.pipe(
+      switchMap((org) => {
+        this.privacyPolicyLoading$.next(true);
+        return from(this.getMyPrivacyPolicy(org ? org.id : ''));
+      }),
+      filter((policy) => !!policy),
+    );
+
+    this.privacypolicy$.subscribe({
+      next: (policy) => {
+        this.privacypolicy.next(policy);
+        this.privacyPolicyLoading$.next(false);
+      },
+      error: (error) => {
+        console.error(error);
+        this.privacyPolicyLoading$.next(false);
+      },
+    });
+
+    this.user = forkJoin([
+      of(this.oauthService.getAccessToken()),
       this.oauthService.events.pipe(
         filter((e) => e.type === 'token_received'),
         timeout(this.oauthService.waitForTokenInMsec || 0),
         catchError((_) => of(null)), // timeout is not an error
         map((_) => this.oauthService.getAccessToken()),
       ),
-    ).pipe(
-      take(1),
-      mergeMap(() => {
+    ]).pipe(
+      filter((token) => (token ? true : false)),
+      distinctUntilChanged(),
+      switchMap(() => {
         return from(
           this.getMyUser().then((resp) => {
-            const user = resp.user;
-            if (user) {
-              return user;
-            } else {
-              return undefined;
-            }
+            return resp.user;
           }),
         );
       }),
@@ -239,42 +246,60 @@ export class GrpcAuthService {
 
   public async getActiveOrg(id?: string): Promise<Org.AsObject> {
     if (id) {
-      const find = this.cachedOrgs.find((tmp) => tmp.id === id);
+      const find = this.cachedOrgs.getValue().find((tmp) => tmp.id === id);
       if (find) {
         this.setActiveOrg(find);
         return Promise.resolve(find);
       } else {
-        const orgs = (await this.listMyProjectOrgs(10, 0)).resultList;
-        this.cachedOrgs = orgs;
+        const orgQuery = new OrgQuery();
+        const orgIdQuery = new OrgIDQuery();
+        orgIdQuery.setId(id);
+        orgQuery.setIdQuery(orgIdQuery);
 
-        const toFind = this.cachedOrgs.find((tmp) => tmp.id === id);
-        if (toFind) {
-          this.setActiveOrg(toFind);
-          return Promise.resolve(toFind);
+        const orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0, [orgQuery])).resultList;
+        if (orgs.length === 1) {
+          this.setActiveOrg(orgs[0]);
+          return Promise.resolve(orgs[0]);
         } else {
+          // throw error if the org was specifically requested but not found
           return Promise.reject(new Error('requested organization not found'));
         }
       }
     } else {
-      let orgs = this.cachedOrgs;
-      if (orgs.length === 0) {
-        orgs = (await this.listMyProjectOrgs()).resultList;
-        this.cachedOrgs = orgs;
-      }
-
+      let orgs = this.cachedOrgs.getValue();
       const org = this.storage.getItem<Org.AsObject>(StorageKey.organization, StorageLocation.local);
-      if (org && orgs.find((tmp) => tmp.id === org.id)) {
-        this.storage.setItem(StorageKey.organization, org, StorageLocation.session);
-        this.setActiveOrg(org);
-        return Promise.resolve(org);
+
+      if (org) {
+        orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+        this.cachedOrgs.next(orgs);
+
+        const find = this.cachedOrgs.getValue().find((tmp) => tmp.id === id);
+        if (find) {
+          this.setActiveOrg(find);
+          return Promise.resolve(find);
+        } else {
+          const orgQuery = new OrgQuery();
+          const orgIdQuery = new OrgIDQuery();
+          orgIdQuery.setId(org.id);
+          orgQuery.setIdQuery(orgIdQuery);
+
+          const specificOrg = (await this.listMyProjectOrgs(ORG_LIMIT, 0, [orgQuery])).resultList;
+          if (specificOrg.length === 1) {
+            this.setActiveOrg(specificOrg[0]);
+            return Promise.resolve(specificOrg[0]);
+          }
+        }
+      } else {
+        orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+        this.cachedOrgs.next(orgs);
       }
 
       if (orgs.length === 0) {
         this._activeOrgChanged.next(undefined);
         return Promise.reject(new Error('No organizations found!'));
       }
-      const orgToSet = orgs.find((element) => element.id !== '0' && element.name !== '');
 
+      const orgToSet = orgs.find((element) => element.id !== '0' && element.name !== '');
       if (orgToSet) {
         this.setActiveOrg(orgToSet);
         return Promise.resolve(orgToSet);
@@ -309,15 +334,37 @@ export class GrpcAuthService {
         filter(([hL, p]) => {
           return hL === true && !!p.length;
         }),
-        map(([_, zroles]) => {
-          const what = this.hasRoles(zroles, roles, requiresAll);
-          return what;
-        }),
+        map(([_, zroles]) => this.hasRoles(zroles, roles, requiresAll)),
         distinctUntilChanged(),
       );
     } else {
       return of(false);
     }
+  }
+
+  /**
+   * filters objects based on roles
+   * @param objects array of objects
+   * @param mapper mapping function which maps to a string[] or Regexp[] of roles
+   * @param requiresAll wheter all, or just a single roles is required to fulfill
+   */
+  public isAllowedMapper<T>(
+    objects: T[],
+    mapper: (attr: any) => string[] | RegExp[],
+    requiresAll: boolean = false,
+  ): Observable<T[]> {
+    return this.fetchedZitadelPermissions.pipe(
+      withLatestFrom(this.zitadelPermissions),
+      filter(([hL, p]) => {
+        return hL === true && !!p.length;
+      }),
+      map(([_, zroles]) => {
+        return objects.filter((obj) => {
+          const roles = mapper(obj);
+          return this.hasRoles(zroles, roles, requiresAll);
+        });
+      }),
+    );
   }
 
   /**
@@ -369,6 +416,11 @@ export class GrpcAuthService {
     return this.grpcService.auth.listMyAuthFactors(new ListMyAuthFactorsRequest(), null).then((resp) => resp.toObject());
   }
 
+  public async revalidateOrgs() {
+    const orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+    this.cachedOrgs.next(orgs);
+  }
+
   public listMyProjectOrgs(
     limit?: number,
     offset?: number,
@@ -387,9 +439,12 @@ export class GrpcAuthService {
     if (queryList) {
       req.setQueriesList(queryList);
     }
-    // if (sortingColumn) {
-    //     req.setSortingColumn(sortingColumn);
-    // }
+    if (sortingDirection) {
+      query.setAsc(sortingDirection === 'asc');
+    }
+    if (sortingColumn) {
+      req.setSortingColumn(sortingColumn);
+    }
 
     req.setQuery(query);
 
@@ -486,11 +541,6 @@ export class GrpcAuthService {
   public resendMyEmailVerification(): Promise<ResendMyEmailVerificationResponse.AsObject> {
     const req = new ResendMyEmailVerificationRequest();
     return this.grpcService.auth.resendMyEmailVerification(req, null).then((resp) => resp.toObject());
-  }
-
-  public getSupportedLanguages(): Promise<GetSupportedLanguagesResponse.AsObject> {
-    const req = new GetSupportedLanguagesRequest();
-    return this.grpcService.auth.getSupportedLanguages(req, null).then((resp) => resp.toObject());
   }
 
   public getMyLoginPolicy(): Promise<GetMyLoginPolicyResponse.AsObject> {
@@ -695,7 +745,23 @@ export class GrpcAuthService {
     }
   }
 
-  public getMyPrivacyPolicy(): Promise<GetMyPrivacyPolicyResponse.AsObject> {
-    return this.grpcService.auth.getMyPrivacyPolicy(new GetMyPrivacyPolicyRequest(), null).then((resp) => resp.toObject());
+  public getMyPrivacyPolicy(orgIdForCache?: string): Promise<PrivacyPolicy.AsObject> {
+    if (orgIdForCache && this.cachedPrivacyPolicies[orgIdForCache]) {
+      return Promise.resolve(this.cachedPrivacyPolicies[orgIdForCache]);
+    } else {
+      return this.grpcService.auth
+        .getMyPrivacyPolicy(new GetMyPrivacyPolicyRequest(), null)
+        .then((resp) => resp.toObject())
+        .then((resp) => {
+          if (resp.policy) {
+            if (orgIdForCache) {
+              this.cachedPrivacyPolicies[orgIdForCache] = resp.policy;
+            }
+            return Promise.resolve(resp.policy);
+          } else {
+            return Promise.reject();
+          }
+        });
+    }
   }
 }

@@ -25,6 +25,8 @@ export const COLORS = [
   { 500: '#d946ef', 200: '#f5d0fe', 300: '#f0abfc', 600: '#c026d3', 700: '#a21caf', 900: '#701a75' },
   { 500: '#ec4899', 200: '#fbcfe8', 300: '#f9a8d4', 600: '#db2777', 700: '#be185d', 900: '#831843' },
   { 500: '#f43f5e', 200: '#fecdd3', 300: '#fda4af', 600: '#e11d48', 700: '#be123c', 900: '#881337' },
+  { 500: '#A89F91', 200: '#D4CDC6', 300: '#BFB6AC', 600: '#8F8378', 700: '#736A60', 900: '#4F4A40' },
+  { 500: '#BA9F88', 200: '#E8D3C5', 300: '#D4BAA7', 600: '#9C7A68', 700: '#8A6E5D', 900: '#5F4C42' },
 ];
 
 export const WEB_APP_COLOR: Color = COLORS[6];
@@ -85,6 +87,12 @@ export function getMembershipColor(role: string): Color {
     case 'IAM_USER_MANAGER':
       color = COLORS[8];
       break;
+    case 'IAM_ADMIN_IMPERSONATOR':
+      color = COLORS[17];
+      break;
+    case 'IAM_END_USER_IMPERSONATOR':
+      color = COLORS[9];
+      break;
 
     case 'ORG_OWNER':
       color = COLORS[16];
@@ -103,6 +111,12 @@ export function getMembershipColor(role: string): Color {
       break;
     case 'ORG_PROJECT_CREATOR':
       color = COLORS[12];
+      break;
+    case 'ORG_ADMIN_IMPERSONATOR':
+      color = COLORS[17];
+      break;
+    case 'ORG_END_USER_IMPERSONATOR':
+      color = COLORS[9];
       break;
 
     case 'PROJECT_OWNER':

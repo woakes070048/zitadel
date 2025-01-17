@@ -1,15 +1,19 @@
 package types
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/zitadel/zitadel/internal/api/assets"
+	http_util "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/i18n"
 	"github.com/zitadel/zitadel/internal/notification/templates"
 	"github.com/zitadel/zitadel/internal/query"
 )
 
-func GetTemplateData(translator *i18n.Translator, translateArgs map[string]interface{}, assetsPrefix, href, msgType, lang string, policy *query.LabelPolicy) templates.TemplateData {
+func GetTemplateData(ctx context.Context, translator *i18n.Translator, translateArgs map[string]interface{}, href, msgType, lang string, policy *query.LabelPolicy) templates.TemplateData {
+	assetsPrefix := http_util.DomainContext(ctx).Origin() + assets.HandlerPrefix
 	templateData := templates.TemplateData{
 		URL:             href,
 		PrimaryColor:    templates.DefaultPrimaryColor,
@@ -27,9 +31,6 @@ func GetTemplateData(translator *i18n.Translator, translateArgs map[string]inter
 	}
 	if policy.Light.FontColor != "" {
 		templateData.FontColor = policy.Light.FontColor
-	}
-	if assetsPrefix == "" {
-		return templateData
 	}
 	if policy.Light.LogoURL != "" {
 		templateData.LogoURL = fmt.Sprintf("%s/%s/%s", assetsPrefix, policy.ID, policy.Light.LogoURL)

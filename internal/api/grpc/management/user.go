@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/zitadel/logging"
-	"github.com/zitadel/oidc/v2/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"golang.org/x/text/language"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -23,17 +23,17 @@ import (
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 	mgmt_pb "github.com/zitadel/zitadel/pkg/grpc/management"
 )
 
 func (s *Server) getUserByID(ctx context.Context, id string) (*query.User, error) {
-	owner, err := query.NewUserResourceOwnerSearchQuery(authz.GetCtxData(ctx).OrgID, query.TextEquals)
+	user, err := s.query.GetUserByID(ctx, true, id)
 	if err != nil {
 		return nil, err
 	}
-	user, err := s.query.GetUserByID(ctx, true, id, false, owner)
-	if err != nil {
-		return nil, err
+	if user.ResourceOwner != authz.GetCtxData(ctx).OrgID {
+		return nil, zerrors.ThrowNotFound(nil, "MANAG-fpo4B", "Errors.User.NotFound")
 	}
 	return user, nil
 }
@@ -49,11 +49,7 @@ func (s *Server) GetUserByID(ctx context.Context, req *mgmt_pb.GetUserByIDReques
 }
 
 func (s *Server) GetUserByLoginNameGlobal(ctx context.Context, req *mgmt_pb.GetUserByLoginNameGlobalRequest) (*mgmt_pb.GetUserByLoginNameGlobalResponse, error) {
-	loginName, err := query.NewUserPreferredLoginNameSearchQuery(req.LoginName, query.TextEquals)
-	if err != nil {
-		return nil, err
-	}
-	user, err := s.query.GetUser(ctx, true, false, loginName)
+	user, err := s.query.GetUserByLoginName(ctx, true, req.LoginName)
 	if err != nil {
 		return nil, err
 	}
@@ -72,13 +68,13 @@ func (s *Server) ListUsers(ctx context.Context, req *mgmt_pb.ListUsersRequest) (
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.query.SearchUsers(ctx, queries, false)
+	res, err := s.query.SearchUsers(ctx, queries, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListUsersResponse{
 		Result:  user_grpc.UsersToPb(res.Users, s.assetAPIPrefix(ctx)),
-		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.Timestamp),
+		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.LastRun),
 	}, nil
 }
 
@@ -97,10 +93,11 @@ func (s *Server) ListUserChanges(ctx context.Context, req *mgmt_pb.ListUserChang
 	query := eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
 		AllowTimeTravel().
 		Limit(limit).
+		AwaitOpenTransactions().
 		OrderDesc().
 		ResourceOwner(authz.GetCtxData(ctx).OrgID).
-		AddQuery().
 		SequenceGreater(sequence).
+		AddQuery().
 		AggregateTypes(user.AggregateType).
 		AggregateIDs(req.UserId).
 		Builder()
@@ -108,7 +105,7 @@ func (s *Server) ListUserChanges(ctx context.Context, req *mgmt_pb.ListUserChang
 		query.OrderAsc()
 	}
 
-	changes, err := s.query.SearchEvents(ctx, query, s.auditLogRetention)
+	changes, err := s.query.SearchEvents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +124,7 @@ func (s *Server) IsUserUnique(ctx context.Context, req *mgmt_pb.IsUserUniqueRequ
 	if !policy.UserLoginMustBeDomain {
 		orgID = ""
 	}
-	unique, err := s.query.IsUserUnique(ctx, req.UserName, req.Email, orgID, false)
+	unique, err := s.query.IsUserUnique(ctx, req.UserName, req.Email, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +148,7 @@ func (s *Server) ListUserMetadata(ctx context.Context, req *mgmt_pb.ListUserMeta
 	}
 	return &mgmt_pb.ListUserMetadataResponse{
 		Result:  metadata.UserMetadataListToPb(res.Metadata),
-		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.Timestamp),
+		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.LastRun),
 	}, nil
 }
 
@@ -219,8 +216,7 @@ func (s *Server) BulkRemoveUserMetadata(ctx context.Context, req *mgmt_pb.BulkRe
 
 func (s *Server) AddHumanUser(ctx context.Context, req *mgmt_pb.AddHumanUserRequest) (*mgmt_pb.AddHumanUserResponse, error) {
 	human := AddHumanUserRequestToAddHuman(req)
-	err := s.command.AddHuman(ctx, authz.GetCtxData(ctx).OrgID, human, true)
-	if err != nil {
+	if err := s.command.AddHuman(ctx, authz.GetCtxData(ctx).OrgID, human, true); err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.AddHumanUserResponse{
@@ -290,9 +286,8 @@ func (s *Server) ImportHumanUser(ctx context.Context, req *mgmt_pb.ImportHumanUs
 		),
 	}
 	if code != nil {
-		origin := http.BuildOrigin(authz.GetInstance(ctx).RequestedHost(), s.externalSecure)
 		resp.PasswordlessRegistration = &mgmt_pb.ImportHumanUserResponse_PasswordlessRegistration{
-			Link:       code.Link(origin + login.HandlerPrefix + login.EndpointPasswordlessRegistration),
+			Link:       code.Link(http.DomainContext(ctx).Origin() + login.HandlerPrefix + login.EndpointPasswordlessRegistration),
 			Lifetime:   durationpb.New(code.Expiration),
 			Expiration: durationpb.New(code.Expiration),
 		}
@@ -373,7 +368,7 @@ func (s *Server) removeUserDependencies(ctx context.Context, userID string) ([]*
 	}
 	grants, err := s.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{userGrantUserQuery},
-	}, true, true)
+	}, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -383,7 +378,7 @@ func (s *Server) removeUserDependencies(ctx context.Context, userID string) ([]*
 	}
 	memberships, err := s.query.Memberships(ctx, &query.MembershipSearchQuery{
 		Queries: []query.SearchQuery{membershipsUserQuery},
-	}, true)
+	}, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -405,7 +400,7 @@ func (s *Server) GetHumanProfile(ctx context.Context, req *mgmt_pb.GetHumanProfi
 	if err != nil {
 		return nil, err
 	}
-	profile, err := s.query.GetHumanProfile(ctx, req.UserId, false, owner)
+	profile, err := s.query.GetHumanProfile(ctx, req.UserId, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +434,7 @@ func (s *Server) GetHumanEmail(ctx context.Context, req *mgmt_pb.GetHumanEmailRe
 	if err != nil {
 		return nil, err
 	}
-	email, err := s.query.GetHumanEmail(ctx, req.UserId, false, owner)
+	email, err := s.query.GetHumanEmail(ctx, req.UserId, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +472,7 @@ func (s *Server) ResendHumanInitialization(ctx context.Context, req *mgmt_pb.Res
 	if err != nil {
 		return nil, err
 	}
-	details, err := s.command.ResendInitialMail(ctx, req.UserId, domain.EmailAddress(req.Email), authz.GetCtxData(ctx).OrgID, initCodeGenerator)
+	details, err := s.command.ResendInitialMail(ctx, req.UserId, domain.EmailAddress(req.Email), authz.GetCtxData(ctx).OrgID, initCodeGenerator, "")
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +486,7 @@ func (s *Server) ResendHumanEmailVerification(ctx context.Context, req *mgmt_pb.
 	if err != nil {
 		return nil, err
 	}
-	objectDetails, err := s.command.CreateHumanEmailVerificationCode(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, emailCodeGenerator)
+	objectDetails, err := s.command.CreateHumanEmailVerificationCode(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, emailCodeGenerator, "")
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +500,7 @@ func (s *Server) GetHumanPhone(ctx context.Context, req *mgmt_pb.GetHumanPhoneRe
 	if err != nil {
 		return nil, err
 	}
-	phone, err := s.query.GetHumanPhone(ctx, req.UserId, false, owner)
+	phone, err := s.query.GetHumanPhone(ctx, req.UserId, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -590,11 +585,7 @@ func (s *Server) SetHumanPassword(ctx context.Context, req *mgmt_pb.SetHumanPass
 }
 
 func (s *Server) SendHumanResetPasswordNotification(ctx context.Context, req *mgmt_pb.SendHumanResetPasswordNotificationRequest) (*mgmt_pb.SendHumanResetPasswordNotificationResponse, error) {
-	passwordCodeGenerator, err := s.query.InitEncryptionGenerator(ctx, domain.SecretGeneratorTypePasswordResetCode, s.userCodeAlg)
-	if err != nil {
-		return nil, err
-	}
-	objectDetails, err := s.command.RequestSetPassword(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, notifyTypeToDomain(req.Type), passwordCodeGenerator)
+	objectDetails, err := s.command.RequestSetPassword(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, notifyTypeToDomain(req.Type), "")
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +608,7 @@ func (s *Server) ListHumanAuthFactors(ctx context.Context, req *mgmt_pb.ListHuma
 	if err != nil {
 		return nil, err
 	}
-	authMethods, err := s.query.SearchUserAuthMethods(ctx, query, false)
+	authMethods, err := s.query.SearchUserAuthMethods(ctx, query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -646,6 +637,26 @@ func (s *Server) RemoveHumanAuthFactorU2F(ctx context.Context, req *mgmt_pb.Remo
 	}, nil
 }
 
+func (s *Server) RemoveHumanAuthFactorOTPSMS(ctx context.Context, req *mgmt_pb.RemoveHumanAuthFactorOTPSMSRequest) (*mgmt_pb.RemoveHumanAuthFactorOTPSMSResponse, error) {
+	objectDetails, err := s.command.RemoveHumanOTPSMS(ctx, req.UserId, authz.GetCtxData(ctx).OrgID)
+	if err != nil {
+		return nil, err
+	}
+	return &mgmt_pb.RemoveHumanAuthFactorOTPSMSResponse{
+		Details: obj_grpc.DomainToChangeDetailsPb(objectDetails),
+	}, nil
+}
+
+func (s *Server) RemoveHumanAuthFactorOTPEmail(ctx context.Context, req *mgmt_pb.RemoveHumanAuthFactorOTPEmailRequest) (*mgmt_pb.RemoveHumanAuthFactorOTPEmailResponse, error) {
+	objectDetails, err := s.command.RemoveHumanOTPEmail(ctx, req.UserId, authz.GetCtxData(ctx).OrgID)
+	if err != nil {
+		return nil, err
+	}
+	return &mgmt_pb.RemoveHumanAuthFactorOTPEmailResponse{
+		Details: obj_grpc.DomainToChangeDetailsPb(objectDetails),
+	}, nil
+}
+
 func (s *Server) ListHumanPasswordless(ctx context.Context, req *mgmt_pb.ListHumanPasswordlessRequest) (*mgmt_pb.ListHumanPasswordlessResponse, error) {
 	query := new(query.UserAuthMethodSearchQueries)
 	err := query.AppendUserIDQuery(req.UserId)
@@ -660,7 +671,7 @@ func (s *Server) ListHumanPasswordless(ctx context.Context, req *mgmt_pb.ListHum
 	if err != nil {
 		return nil, err
 	}
-	authMethods, err := s.query.SearchUserAuthMethods(ctx, query, false)
+	authMethods, err := s.query.SearchUserAuthMethods(ctx, query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -679,10 +690,9 @@ func (s *Server) AddPasswordlessRegistration(ctx context.Context, req *mgmt_pb.A
 	if err != nil {
 		return nil, err
 	}
-	origin := http.BuildOrigin(authz.GetInstance(ctx).RequestedHost(), s.externalSecure)
 	return &mgmt_pb.AddPasswordlessRegistrationResponse{
 		Details:    obj_grpc.AddToDetailsPb(initCode.Sequence, initCode.ChangeDate, initCode.ResourceOwner),
-		Link:       initCode.Link(origin + login.HandlerPrefix + login.EndpointPasswordlessRegistration),
+		Link:       initCode.Link(http.DomainContext(ctx).Origin() + login.HandlerPrefix + login.EndpointPasswordlessRegistration),
 		Expiration: durationpb.New(initCode.Expiration),
 	}, nil
 }
@@ -732,7 +742,7 @@ func (s *Server) GetMachineKeyByIDs(ctx context.Context, req *mgmt_pb.GetMachine
 	if err != nil {
 		return nil, err
 	}
-	key, err := s.query.GetAuthNKeyByID(ctx, true, req.KeyId, false, resourceOwner, aggregateID)
+	key, err := s.query.GetAuthNKeyByID(ctx, true, req.KeyId, resourceOwner, aggregateID)
 	if err != nil {
 		return nil, err
 	}
@@ -752,19 +762,28 @@ func (s *Server) ListMachineKeys(ctx context.Context, req *mgmt_pb.ListMachineKe
 	}
 	return &mgmt_pb.ListMachineKeysResponse{
 		Result:  authn.KeysToPb(result.AuthNKeys),
-		Details: obj_grpc.ToListDetails(result.Count, result.Sequence, result.Timestamp),
+		Details: obj_grpc.ToListDetails(result.Count, result.Sequence, result.LastRun),
 	}, nil
 }
 
 func (s *Server) AddMachineKey(ctx context.Context, req *mgmt_pb.AddMachineKeyRequest) (*mgmt_pb.AddMachineKeyResponse, error) {
 	machineKey := AddMachineKeyRequestToCommand(req, authz.GetCtxData(ctx).OrgID)
+	// If there is no pubkey supplied, then AddUserMachineKey will generate a new one
+	pubkeySupplied := len(machineKey.PublicKey) > 0
 	details, err := s.command.AddUserMachineKey(ctx, machineKey)
 	if err != nil {
 		return nil, err
 	}
-	keyDetails, err := machineKey.Detail()
-	if err != nil {
-		return nil, err
+
+	// Return key details only if the pubkey wasn't supplied, otherwise the user already has
+	// private key locally
+	var keyDetails []byte
+	if !pubkeySupplied {
+		var err error
+		keyDetails, err = machineKey.Detail()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &mgmt_pb.AddMachineKeyResponse{
 		KeyId:      machineKey.KeyID,
@@ -784,18 +803,13 @@ func (s *Server) RemoveMachineKey(ctx context.Context, req *mgmt_pb.RemoveMachin
 }
 
 func (s *Server) GenerateMachineSecret(ctx context.Context, req *mgmt_pb.GenerateMachineSecretRequest) (*mgmt_pb.GenerateMachineSecretResponse, error) {
-	// use SecretGeneratorTypeAppSecret as the secrets will be used in the client_credentials grant like a client secret
-	secretGenerator, err := s.query.InitHashGenerator(ctx, domain.SecretGeneratorTypeAppSecret, s.passwordHashAlg)
-	if err != nil {
-		return nil, err
-	}
 	user, err := s.getUserByID(ctx, req.GetUserId())
 	if err != nil {
 		return nil, err
 	}
 
 	set := new(command.GenerateMachineSecret)
-	details, err := s.command.GenerateMachineSecret(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, secretGenerator, set)
+	details, err := s.command.GenerateMachineSecret(ctx, req.UserId, authz.GetCtxData(ctx).OrgID, set)
 	if err != nil {
 		return nil, err
 	}
@@ -845,7 +859,7 @@ func (s *Server) ListPersonalAccessTokens(ctx context.Context, req *mgmt_pb.List
 	}
 	return &mgmt_pb.ListPersonalAccessTokensResponse{
 		Result:  user_grpc.PersonalAccessTokensToPb(result.PersonalAccessTokens),
-		Details: obj_grpc.ToListDetails(result.Count, result.Sequence, result.Timestamp),
+		Details: obj_grpc.ToListDetails(result.Count, result.Sequence, result.LastRun),
 	}, nil
 }
 
@@ -878,13 +892,13 @@ func (s *Server) ListHumanLinkedIDPs(ctx context.Context, req *mgmt_pb.ListHuman
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.query.IDPUserLinks(ctx, queries, false)
+	res, err := s.query.IDPUserLinks(ctx, queries, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListHumanLinkedIDPsResponse{
 		Result:  idp_grpc.IDPUserLinksToPb(res.Links),
-		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.Timestamp),
+		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.LastRun),
 	}, nil
 }
 func (s *Server) RemoveHumanLinkedIDP(ctx context.Context, req *mgmt_pb.RemoveHumanLinkedIDPRequest) (*mgmt_pb.RemoveHumanLinkedIDPResponse, error) {
@@ -908,7 +922,7 @@ func (s *Server) ListUserMemberships(ctx context.Context, req *mgmt_pb.ListUserM
 	}
 	return &mgmt_pb.ListUserMembershipsResponse{
 		Result:  user_grpc.MembershipsToMembershipsPb(response.Memberships),
-		Details: obj_grpc.ToListDetails(response.Count, response.Sequence, response.Timestamp),
+		Details: obj_grpc.ToListDetails(response.Count, response.Sequence, response.LastRun),
 	}, nil
 }
 

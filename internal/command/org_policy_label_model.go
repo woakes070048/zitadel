@@ -3,8 +3,8 @@ package command
 import (
 	"context"
 
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 )
@@ -98,6 +98,7 @@ func (wm *OrgLabelPolicyWriteModel) NewChangedEvent(
 	hideLoginNameSuffix,
 	errorMsgPopup,
 	disableWatermark bool,
+	themeMode domain.LabelPolicyThemeMode,
 ) (*org.LabelPolicyChangedEvent, bool) {
 	changes := make([]policy.LabelPolicyChanges, 0)
 	if wm.PrimaryColor != primaryColor {
@@ -132,6 +133,9 @@ func (wm *OrgLabelPolicyWriteModel) NewChangedEvent(
 	}
 	if wm.DisableWatermark != disableWatermark {
 		changes = append(changes, policy.ChangeDisableWatermark(disableWatermark))
+	}
+	if wm.ThemeMode != themeMode {
+		changes = append(changes, policy.ChangeThemeMode(themeMode))
 	}
 	if len(changes) == 0 {
 		return nil, false

@@ -1,11 +1,12 @@
 package idp
 
 import (
+	"github.com/crewjam/saml"
+	"github.com/muhlemmer/gu"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	obj_grpc "github.com/zitadel/zitadel/internal/api/grpc/object"
 	"github.com/zitadel/zitadel/internal/domain"
-	iam_model "github.com/zitadel/zitadel/internal/iam/model"
 	"github.com/zitadel/zitadel/internal/idp/providers/azuread"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/repository/idp"
@@ -254,40 +255,6 @@ func IDPProviderTypeFromPb(typ idp_pb.IDPOwnerType) domain.IdentityProviderType 
 	}
 }
 
-func IDPProviderTypeModelFromPb(typ idp_pb.IDPOwnerType) iam_model.IDPProviderType {
-	switch typ {
-	case idp_pb.IDPOwnerType_IDP_OWNER_TYPE_ORG:
-		return iam_model.IDPProviderTypeOrg
-	case idp_pb.IDPOwnerType_IDP_OWNER_TYPE_SYSTEM:
-		return iam_model.IDPProviderTypeSystem
-	default:
-		return iam_model.IDPProviderTypeOrg
-	}
-}
-
-func IDPIDQueryToModel(query *idp_pb.IDPIDQuery) *iam_model.IDPConfigSearchQuery {
-	return &iam_model.IDPConfigSearchQuery{
-		Key:    iam_model.IDPConfigSearchKeyIdpConfigID,
-		Method: domain.SearchMethodEquals,
-		Value:  query.Id,
-	}
-}
-
-func IDPNameQueryToModel(query *idp_pb.IDPNameQuery) *iam_model.IDPConfigSearchQuery {
-	return &iam_model.IDPConfigSearchQuery{
-		Key:    iam_model.IDPConfigSearchKeyName,
-		Method: obj_grpc.TextMethodToModel(query.Method),
-		Value:  query.Name,
-	}
-}
-
-func IDPOwnerTypeQueryToModel(query *idp_pb.IDPOwnerTypeQuery) *iam_model.IDPConfigSearchQuery {
-	return &iam_model.IDPConfigSearchQuery{
-		Key:    iam_model.IDPConfigSearchKeyIdpProviderType,
-		Method: domain.SearchMethodEquals,
-		Value:  IDPProviderTypeModelFromPb(query.OwnerType),
-	}
-}
 func ownerTypeToPB(typ domain.IdentityProviderType) idp_pb.IDPOwnerType {
 	switch typ {
 	case domain.IdentityProviderTypeOrg:
@@ -308,6 +275,20 @@ func OptionsToCommand(options *idp_pb.Options) idp.Options {
 		IsLinkingAllowed:  options.IsLinkingAllowed,
 		IsAutoCreation:    options.IsAutoCreation,
 		IsAutoUpdate:      options.IsAutoUpdate,
+		AutoLinkingOption: autoLinkingOptionToCommand(options.AutoLinking),
+	}
+}
+
+func autoLinkingOptionToCommand(linking idp_pb.AutoLinkingOption) domain.AutoLinkingOption {
+	switch linking {
+	case idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_USERNAME:
+		return domain.AutoLinkingOptionUsername
+	case idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_EMAIL:
+		return domain.AutoLinkingOptionEmail
+	case idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_UNSPECIFIED:
+		return domain.AutoLinkingOptionUnspecified
+	default:
+		return domain.AutoLinkingOptionUnspecified
 	}
 }
 
@@ -356,6 +337,21 @@ func azureADTenantTypeToCommand(tenantType idp_pb.AzureADTenantType) azuread.Ten
 		return azuread.ConsumersTenant
 	default:
 		return azuread.CommonTenant
+	}
+}
+
+func SAMLNameIDFormatToDomain(format idp_pb.SAMLNameIDFormat) domain.SAMLNameIDFormat {
+	switch format {
+	case idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_UNSPECIFIED:
+		return domain.SAMLNameIDFormatUnspecified
+	case idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_EMAIL_ADDRESS:
+		return domain.SAMLNameIDFormatEmailAddress
+	case idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_PERSISTENT:
+		return domain.SAMLNameIDFormatPersistent
+	case idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_TRANSIENT:
+		return domain.SAMLNameIDFormatTransient
+	default:
+		return domain.SAMLNameIDFormatUnspecified
 	}
 }
 
@@ -416,6 +412,8 @@ func providerTypeToPb(idpType domain.IDPType) idp_pb.ProviderType {
 		return idp_pb.ProviderType_PROVIDER_TYPE_GOOGLE
 	case domain.IDPTypeApple:
 		return idp_pb.ProviderType_PROVIDER_TYPE_APPLE
+	case domain.IDPTypeSAML:
+		return idp_pb.ProviderType_PROVIDER_TYPE_SAML
 	case domain.IDPTypeUnspecified:
 		return idp_pb.ProviderType_PROVIDER_TYPE_UNSPECIFIED
 	default:
@@ -430,6 +428,7 @@ func configToPb(config *query.IDPTemplate) *idp_pb.ProviderConfig {
 			IsCreationAllowed: config.IsCreationAllowed,
 			IsAutoCreation:    config.IsAutoCreation,
 			IsAutoUpdate:      config.IsAutoUpdate,
+			AutoLinking:       autoLinkingOptionToPb(config.AutoLinking),
 		},
 	}
 	if config.OAuthIDPTemplate != nil {
@@ -476,7 +475,24 @@ func configToPb(config *query.IDPTemplate) *idp_pb.ProviderConfig {
 		appleConfigToPb(providerConfig, config.AppleIDPTemplate)
 		return providerConfig
 	}
+	if config.SAMLIDPTemplate != nil {
+		samlConfigToPb(providerConfig, config.SAMLIDPTemplate)
+		return providerConfig
+	}
 	return providerConfig
+}
+
+func autoLinkingOptionToPb(linking domain.AutoLinkingOption) idp_pb.AutoLinkingOption {
+	switch linking {
+	case domain.AutoLinkingOptionUnspecified:
+		return idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_UNSPECIFIED
+	case domain.AutoLinkingOptionUsername:
+		return idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_USERNAME
+	case domain.AutoLinkingOptionEmail:
+		return idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_EMAIL
+	default:
+		return idp_pb.AutoLinkingOption_AUTO_LINKING_OPTION_UNSPECIFIED
+	}
 }
 
 func oauthConfigToPb(providerConfig *idp_pb.ProviderConfig, template *query.OAuthIDPTemplate) {
@@ -635,5 +651,51 @@ func appleConfigToPb(providerConfig *idp_pb.ProviderConfig, template *query.Appl
 			KeyId:    template.KeyID,
 			Scopes:   template.Scopes,
 		},
+	}
+}
+
+func samlConfigToPb(providerConfig *idp_pb.ProviderConfig, template *query.SAMLIDPTemplate) {
+	nameIDFormat := idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_PERSISTENT
+	if template.NameIDFormat.Valid {
+		nameIDFormat = nameIDToPb(template.NameIDFormat.V)
+	}
+	providerConfig.Config = &idp_pb.ProviderConfig_Saml{
+		Saml: &idp_pb.SAMLConfig{
+			MetadataXml:                   template.Metadata,
+			Binding:                       bindingToPb(template.Binding),
+			WithSignedRequest:             template.WithSignedRequest,
+			NameIdFormat:                  nameIDFormat,
+			TransientMappingAttributeName: gu.Ptr(template.TransientMappingAttributeName),
+		},
+	}
+}
+
+func bindingToPb(binding string) idp_pb.SAMLBinding {
+	switch binding {
+	case "":
+		return idp_pb.SAMLBinding_SAML_BINDING_UNSPECIFIED
+	case saml.HTTPPostBinding:
+		return idp_pb.SAMLBinding_SAML_BINDING_POST
+	case saml.HTTPRedirectBinding:
+		return idp_pb.SAMLBinding_SAML_BINDING_REDIRECT
+	case saml.HTTPArtifactBinding:
+		return idp_pb.SAMLBinding_SAML_BINDING_ARTIFACT
+	default:
+		return idp_pb.SAMLBinding_SAML_BINDING_UNSPECIFIED
+	}
+}
+
+func nameIDToPb(format domain.SAMLNameIDFormat) idp_pb.SAMLNameIDFormat {
+	switch format {
+	case domain.SAMLNameIDFormatUnspecified:
+		return idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_UNSPECIFIED
+	case domain.SAMLNameIDFormatEmailAddress:
+		return idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_EMAIL_ADDRESS
+	case domain.SAMLNameIDFormatPersistent:
+		return idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_PERSISTENT
+	case domain.SAMLNameIDFormatTransient:
+		return idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_TRANSIENT
+	default:
+		return idp_pb.SAMLNameIDFormat_SAML_NAME_ID_FORMAT_UNSPECIFIED
 	}
 }

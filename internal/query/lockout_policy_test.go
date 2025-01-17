@@ -9,20 +9,21 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	prepareLockoutPolicyStmt = `SELECT projections.lockout_policies2.id,` +
-		` projections.lockout_policies2.sequence,` +
-		` projections.lockout_policies2.creation_date,` +
-		` projections.lockout_policies2.change_date,` +
-		` projections.lockout_policies2.resource_owner,` +
-		` projections.lockout_policies2.show_failure,` +
-		` projections.lockout_policies2.max_password_attempts,` +
-		` projections.lockout_policies2.is_default,` +
-		` projections.lockout_policies2.state` +
-		` FROM projections.lockout_policies2` +
+	prepareLockoutPolicyStmt = `SELECT projections.lockout_policies3.id,` +
+		` projections.lockout_policies3.sequence,` +
+		` projections.lockout_policies3.creation_date,` +
+		` projections.lockout_policies3.change_date,` +
+		` projections.lockout_policies3.resource_owner,` +
+		` projections.lockout_policies3.show_failure,` +
+		` projections.lockout_policies3.max_password_attempts,` +
+		` projections.lockout_policies3.max_otp_attempts,` +
+		` projections.lockout_policies3.is_default,` +
+		` projections.lockout_policies3.state` +
+		` FROM projections.lockout_policies3` +
 		` AS OF SYSTEM TIME '-1 ms'`
 
 	prepareLockoutPolicyCols = []string{
@@ -33,6 +34,7 @@ var (
 		"resource_owner",
 		"show_failure",
 		"max_password_attempts",
+		"max_otp_attempts",
 		"is_default",
 		"state",
 	}
@@ -59,7 +61,7 @@ func Test_LockoutPolicyPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -82,6 +84,7 @@ func Test_LockoutPolicyPrepares(t *testing.T) {
 						"ro",
 						true,
 						20,
+						20,
 						true,
 						domain.PolicyStateActive,
 					},
@@ -96,6 +99,7 @@ func Test_LockoutPolicyPrepares(t *testing.T) {
 				State:               domain.PolicyStateActive,
 				ShowFailures:        true,
 				MaxPasswordAttempts: 20,
+				MaxOTPAttempts:      20,
 				IsDefault:           true,
 			},
 		},

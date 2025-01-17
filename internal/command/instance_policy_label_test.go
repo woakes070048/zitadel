@@ -5,173 +5,19 @@ import (
 	"context"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 	"github.com/zitadel/zitadel/internal/static"
 	"github.com/zitadel/zitadel/internal/static/mock"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
-
-func TestCommandSide_AddDefaultLabelPolicy(t *testing.T) {
-	type fields struct {
-		eventstore *eventstore.Eventstore
-	}
-	type args struct {
-		ctx                 context.Context
-		primaryColor        string
-		backgroundColor     string
-		warnColor           string
-		fontColor           string
-		primaryColorDark    string
-		backgroundColorDark string
-		warnColorDark       string
-		fontColorDark       string
-		hideLoginNameSuffix bool
-		errorMsgPopup       bool
-		disableWatermark    bool
-	}
-	type res struct {
-		want *domain.ObjectDetails
-		err  func(error) bool
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		args   args
-		res    res
-	}{
-		{
-			name: "labelpolicy already existing, already exists error",
-			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-					expectFilter(
-						eventFromEventPusher(
-							instance.NewLabelPolicyAddedEvent(context.Background(),
-								&instance.NewAggregate("INSTANCE").Aggregate,
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								"#ffffff",
-								true,
-								true,
-								true,
-							),
-						),
-					),
-				),
-			},
-			args: args{
-				ctx:                 context.Background(),
-				primaryColor:        "#ffffff",
-				backgroundColor:     "#ffffff",
-				warnColor:           "#ffffff",
-				fontColor:           "#ffffff",
-				primaryColorDark:    "#ffffff",
-				backgroundColorDark: "#ffffff",
-				warnColorDark:       "#ffffff",
-				fontColorDark:       "#ffffff",
-				hideLoginNameSuffix: true,
-				errorMsgPopup:       true,
-				disableWatermark:    true,
-			},
-			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
-			},
-		},
-		{
-			name: "add policy,ok",
-			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-					expectFilter(),
-					expectPush(
-						[]*repository.Event{
-							eventFromEventPusherWithInstanceID(
-								"INSTANCE",
-								instance.NewLabelPolicyAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									"#ffffff",
-									true,
-									true,
-									true,
-								),
-							),
-						},
-					),
-				),
-			},
-			args: args{
-				ctx:                 authz.WithInstanceID(context.Background(), "INSTANCE"),
-				primaryColor:        "#ffffff",
-				backgroundColor:     "#ffffff",
-				warnColor:           "#ffffff",
-				fontColor:           "#ffffff",
-				primaryColorDark:    "#ffffff",
-				backgroundColorDark: "#ffffff",
-				warnColorDark:       "#ffffff",
-				fontColorDark:       "#ffffff",
-				hideLoginNameSuffix: true,
-				errorMsgPopup:       true,
-				disableWatermark:    true,
-			},
-			res: res{
-				want: &domain.ObjectDetails{
-					ResourceOwner: "INSTANCE",
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &Commands{
-				eventstore: tt.fields.eventstore,
-			}
-			got, err := r.AddDefaultLabelPolicy(
-				tt.args.ctx,
-				tt.args.primaryColor,
-				tt.args.backgroundColor,
-				tt.args.warnColor,
-				tt.args.fontColor,
-				tt.args.primaryColorDark,
-				tt.args.backgroundColorDark,
-				tt.args.warnColorDark,
-				tt.args.fontColorDark,
-				tt.args.hideLoginNameSuffix,
-				tt.args.errorMsgPopup,
-				tt.args.disableWatermark,
-			)
-			if tt.res.err == nil {
-				assert.NoError(t, err)
-			}
-			if tt.res.err != nil && !tt.res.err(err) {
-				t.Errorf("got wrong err: %v ", err)
-			}
-			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
-			}
-		})
-	}
-}
 
 func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 	type fields struct {
@@ -208,7 +54,7 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -231,6 +77,7 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -250,10 +97,11 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 					HideLoginNameSuffix: true,
 					ErrorMsgPopup:       true,
 					DisableWatermark:    true,
+					ThemeMode:           domain.LabelPolicyThemeAuto,
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -276,27 +124,25 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								newDefaultLabelPolicyChangedEvent(
-									context.Background(),
-									"#000000",
-									"#000000",
-									"#000000",
-									"#000000",
-									"#000000",
-									"#000000",
-									"#000000",
-									"#000000",
-									false,
-									false,
-									false),
-							),
-						},
+						newDefaultLabelPolicyChangedEvent(
+							context.Background(),
+							"#000000",
+							"#000000",
+							"#000000",
+							"#000000",
+							"#000000",
+							"#000000",
+							"#000000",
+							"#000000",
+							false,
+							false,
+							false,
+							domain.LabelPolicyThemeDark),
 					),
 				),
 			},
@@ -314,6 +160,7 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 					HideLoginNameSuffix: false,
 					ErrorMsgPopup:       false,
 					DisableWatermark:    false,
+					ThemeMode:           domain.LabelPolicyThemeDark,
 				},
 			},
 			res: res{
@@ -321,6 +168,7 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 					ObjectRoot: models.ObjectRoot{
 						AggregateID:   "INSTANCE",
 						ResourceOwner: "INSTANCE",
+						InstanceID:    "INSTANCE",
 					},
 					PrimaryColor:        "#000000",
 					BackgroundColor:     "#000000",
@@ -333,6 +181,7 @@ func TestCommandSide_ChangeDefaultLabelPolicy(t *testing.T) {
 					HideLoginNameSuffix: false,
 					ErrorMsgPopup:       false,
 					DisableWatermark:    false,
+					ThemeMode:           domain.LabelPolicyThemeDark,
 				},
 			},
 		},
@@ -385,7 +234,7 @@ func TestCommandSide_ActivateDefaultLabelPolicy(t *testing.T) {
 				ctx: authz.WithInstanceID(context.Background(), "INSTANCE"),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -408,18 +257,14 @@ func TestCommandSide_ActivateDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusherWithInstanceID(
-								"INSTANCE",
-								instance.NewLabelPolicyActivatedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-								),
-							),
-						},
+						instance.NewLabelPolicyActivatedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+						),
 					),
 				),
 			},
@@ -446,7 +291,7 @@ func TestCommandSide_ActivateDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -491,7 +336,7 @@ func TestCommandSide_AddLogoDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -514,6 +359,7 @@ func TestCommandSide_AddLogoDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -532,7 +378,7 @@ func TestCommandSide_AddLogoDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -555,18 +401,15 @@ func TestCommandSide_AddLogoDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyLogoAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"logo",
-								),
-							),
-						},
+						instance.NewLabelPolicyLogoAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"logo",
+						),
 					),
 				),
 				storage: mock.NewStorage(t).ExpectPutObject(),
@@ -603,7 +446,7 @@ func TestCommandSide_AddLogoDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -639,7 +482,7 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -663,6 +506,7 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -678,7 +522,7 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -702,6 +546,7 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -712,14 +557,10 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyLogoRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"key",
-								),
-							),
-						},
+						instance.NewLabelPolicyLogoRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"key",
+						),
 					),
 				),
 			},
@@ -747,7 +588,7 @@ func TestCommandSide_RemoveLogoDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -792,7 +633,7 @@ func TestCommandSide_AddIconDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -815,6 +656,7 @@ func TestCommandSide_AddIconDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -833,7 +675,7 @@ func TestCommandSide_AddIconDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -856,18 +698,15 @@ func TestCommandSide_AddIconDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyIconAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"icon",
-								),
-							),
-						},
+						instance.NewLabelPolicyIconAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"icon",
+						),
 					),
 				),
 				storage: mock.NewStorage(t).ExpectPutObject(),
@@ -904,7 +743,7 @@ func TestCommandSide_AddIconDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -940,7 +779,7 @@ func TestCommandSide_RemoveIconDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -964,6 +803,7 @@ func TestCommandSide_RemoveIconDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -974,14 +814,10 @@ func TestCommandSide_RemoveIconDefaultLabelPolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyIconRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"key",
-								),
-							),
-						},
+						instance.NewLabelPolicyIconRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"key",
+						),
 					),
 				),
 			},
@@ -1009,7 +845,7 @@ func TestCommandSide_RemoveIconDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1056,7 +892,7 @@ func TestCommandSide_AddLogoDarkDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1079,6 +915,7 @@ func TestCommandSide_AddLogoDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -1098,7 +935,7 @@ func TestCommandSide_AddLogoDarkDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1121,18 +958,15 @@ func TestCommandSide_AddLogoDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyLogoDarkAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"logo",
-								),
-							),
-						},
+						instance.NewLabelPolicyLogoDarkAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"logo",
+						),
 					),
 				),
 				storage: mock.NewStorage(t).ExpectPutObject(),
@@ -1169,7 +1003,7 @@ func TestCommandSide_AddLogoDarkDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1205,7 +1039,7 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1229,6 +1063,7 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1244,7 +1079,7 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1268,6 +1103,7 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1278,14 +1114,10 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyLogoDarkRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"key",
-								),
-							),
-						},
+						instance.NewLabelPolicyLogoDarkRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"key",
+						),
 					),
 				),
 			},
@@ -1313,7 +1145,7 @@ func TestCommandSide_RemoveLogoDarkDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1358,7 +1190,7 @@ func TestCommandSide_AddIconDarkDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1381,6 +1213,7 @@ func TestCommandSide_AddIconDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -1399,7 +1232,7 @@ func TestCommandSide_AddIconDarkDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1422,18 +1255,15 @@ func TestCommandSide_AddIconDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyIconDarkAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"icon",
-								),
-							),
-						},
+						instance.NewLabelPolicyIconDarkAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"icon",
+						),
 					),
 				),
 				storage: mock.NewStorage(t).ExpectPutObject(),
@@ -1470,7 +1300,7 @@ func TestCommandSide_AddIconDarkDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1506,7 +1336,7 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1530,6 +1360,7 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1545,7 +1376,7 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1569,6 +1400,7 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1579,14 +1411,10 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyIconDarkRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"key",
-								),
-							),
-						},
+						instance.NewLabelPolicyIconDarkRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"key",
+						),
 					),
 				),
 			},
@@ -1614,7 +1442,7 @@ func TestCommandSide_RemoveIconDarkDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1659,7 +1487,7 @@ func TestCommandSide_AddFontDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1682,6 +1510,7 @@ func TestCommandSide_AddFontDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
@@ -1700,7 +1529,7 @@ func TestCommandSide_AddFontDefaultLabelPolicy(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1723,18 +1552,15 @@ func TestCommandSide_AddFontDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyFontAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"font",
-								),
-							),
-						},
+						instance.NewLabelPolicyFontAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"font",
+						),
 					),
 				),
 				storage: mock.NewStorage(t).ExpectPutObject(),
@@ -1771,7 +1597,7 @@ func TestCommandSide_AddFontDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1807,7 +1633,7 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1831,6 +1657,7 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1846,7 +1673,7 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -1870,6 +1697,7 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 								true,
 								true,
 								true,
+								domain.LabelPolicyThemeAuto,
 							),
 						),
 						eventFromEventPusher(
@@ -1880,14 +1708,10 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								instance.NewLabelPolicyFontRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"key",
-								),
-							),
-						},
+						instance.NewLabelPolicyFontRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"key",
+						),
 					),
 				),
 			},
@@ -1915,13 +1739,13 @@ func TestCommandSide_RemoveFontDefaultLabelPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
 }
 
-func newDefaultLabelPolicyChangedEvent(ctx context.Context, primaryColor, backgroundColor, warnColor, fontColor, primaryColorDark, backgroundColorDark, warnColorDark, fontColorDark string, hideLoginNameSuffix, errMsgPopup, disableWatermark bool) *instance.LabelPolicyChangedEvent {
+func newDefaultLabelPolicyChangedEvent(ctx context.Context, primaryColor, backgroundColor, warnColor, fontColor, primaryColorDark, backgroundColorDark, warnColorDark, fontColorDark string, hideLoginNameSuffix, errMsgPopup, disableWatermark bool, theme domain.LabelPolicyThemeMode) *instance.LabelPolicyChangedEvent {
 	event, _ := instance.NewLabelPolicyChangedEvent(ctx,
 		&instance.NewAggregate("INSTANCE").Aggregate,
 		[]policy.LabelPolicyChanges{
@@ -1936,6 +1760,7 @@ func newDefaultLabelPolicyChangedEvent(ctx context.Context, primaryColor, backgr
 			policy.ChangeHideLoginNameSuffix(hideLoginNameSuffix),
 			policy.ChangeErrorMsgPopup(errMsgPopup),
 			policy.ChangeDisableWatermark(disableWatermark),
+			policy.ChangeThemeMode(theme),
 		},
 	)
 	return event

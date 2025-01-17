@@ -16,7 +16,7 @@ profile.cov
 *.out
 
 #Debug
-__debug_bin
+__debug_bin*
 debug
 sandbox.go
 /cmd/dev/
@@ -25,11 +25,13 @@ sandbox.go
 .idea
 .vscode
 .DS_STORE
+.run
 
 # credential
 google-credentials
 key.json
 .keys/*
+load-test/.keys
 
 # dumps
 .backups
@@ -48,6 +50,7 @@ cmd/zitadel/zitadel
 tmp/
 console/src/app/proto/generated/
 **.pb.go
+!pkg/grpc/protoc/v2/options.pb.go
 **.proto.mock.go
 **.pb.*.go
 **.gen.go 
@@ -74,8 +77,15 @@ migrations/cockroach/migrate_cloud.go
 !/.artifacts/zitadel
 /zitadel
 node_modules/
+.kreya
 
 go.work
 go.work.sum
 # Local Netlify folder
 .netlify
+
+load-test/node_modules
+load-test/yarn-error.log
+load-test/dist
+load-test/output/*
+.vercel

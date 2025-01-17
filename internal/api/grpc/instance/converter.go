@@ -3,8 +3,8 @@ package org
 import (
 	"github.com/zitadel/zitadel/cmd/build"
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/zerrors"
 	instance_pb "github.com/zitadel/zitadel/pkg/grpc/instance"
 )
 
@@ -22,9 +22,9 @@ func InstanceToPb(instance *query.Instance) *instance_pb.Instance {
 			instance.Sequence,
 			instance.CreationDate,
 			instance.ChangeDate,
-			instance.InstanceID(),
+			instance.ID,
 		),
-		Id:      instance.InstanceID(),
+		Id:      instance.ID,
 		Name:    instance.Name,
 		Domains: DomainsToPb(instance.Domains),
 		Version: build.Version(),
@@ -38,9 +38,9 @@ func InstanceDetailToPb(instance *query.Instance) *instance_pb.InstanceDetail {
 			instance.Sequence,
 			instance.CreationDate,
 			instance.ChangeDate,
-			instance.InstanceID(),
+			instance.ID,
 		),
-		Id:      instance.InstanceID(),
+		Id:      instance.ID,
 		Name:    instance.Name,
 		Domains: DomainsToPb(instance.Domains),
 		Version: build.Version(),
@@ -63,8 +63,10 @@ func InstanceQueryToModel(searchQuery *instance_pb.Query) (query.SearchQuery, er
 	switch q := searchQuery.Query.(type) {
 	case *instance_pb.Query_IdQuery:
 		return query.NewInstanceIDsListSearchQuery(q.IdQuery.Ids...)
+	case *instance_pb.Query_DomainQuery:
+		return query.NewInstanceDomainsListSearchQuery(q.DomainQuery.Domains...)
 	default:
-		return nil, errors.ThrowInvalidArgument(nil, "INST-3m0se", "List.Query.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "INST-3m0se", "List.Query.Invalid")
 	}
 }
 
@@ -88,7 +90,7 @@ func DomainQueryToModel(searchQuery *instance_pb.DomainSearchQuery) (query.Searc
 	case *instance_pb.DomainSearchQuery_PrimaryQuery:
 		return query.NewInstanceDomainPrimarySearchQuery(q.PrimaryQuery.Primary)
 	default:
-		return nil, errors.ThrowInvalidArgument(nil, "INST-Ags42", "List.Query.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "INST-Ags42", "List.Query.Invalid")
 	}
 }
 
@@ -105,6 +107,46 @@ func DomainToPb(d *query.InstanceDomain) *instance_pb.Domain {
 		Domain:    d.Domain,
 		Primary:   d.IsPrimary,
 		Generated: d.IsGenerated,
+		Details: object.ToViewDetailsPb(
+			d.Sequence,
+			d.CreationDate,
+			d.ChangeDate,
+			d.InstanceID,
+		),
+	}
+}
+
+func TrustedDomainQueriesToModel(queries []*instance_pb.TrustedDomainSearchQuery) (_ []query.SearchQuery, err error) {
+	q := make([]query.SearchQuery, len(queries))
+	for i, query := range queries {
+		q[i], err = TrustedDomainQueryToModel(query)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return q, nil
+}
+
+func TrustedDomainQueryToModel(searchQuery *instance_pb.TrustedDomainSearchQuery) (query.SearchQuery, error) {
+	switch q := searchQuery.Query.(type) {
+	case *instance_pb.TrustedDomainSearchQuery_DomainQuery:
+		return query.NewInstanceTrustedDomainDomainSearchQuery(object.TextMethodToQuery(q.DomainQuery.Method), q.DomainQuery.Domain)
+	default:
+		return nil, zerrors.ThrowInvalidArgument(nil, "INST-Ags42", "List.Query.Invalid")
+	}
+}
+
+func TrustedDomainsToPb(domains []*query.InstanceTrustedDomain) []*instance_pb.TrustedDomain {
+	d := make([]*instance_pb.TrustedDomain, len(domains))
+	for i, domain := range domains {
+		d[i] = TrustedDomainToPb(domain)
+	}
+	return d
+}
+
+func TrustedDomainToPb(d *query.InstanceTrustedDomain) *instance_pb.TrustedDomain {
+	return &instance_pb.TrustedDomain{
+		Domain: d.Domain,
 		Details: object.ToViewDetailsPb(
 			d.Sequence,
 			d.CreationDate,

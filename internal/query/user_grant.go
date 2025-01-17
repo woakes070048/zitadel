@@ -3,48 +3,54 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type UserGrant struct {
 	// ID represents the aggregate id (id of the user grant)
-	ID           string
-	CreationDate time.Time
-	ChangeDate   time.Time
-	Sequence     uint64
-	Roles        database.StringArray
+	ID           string                     `json:"id,omitempty"`
+	CreationDate time.Time                  `json:"creation_date,omitempty"`
+	ChangeDate   time.Time                  `json:"change_date,omitempty"`
+	Sequence     uint64                     `json:"sequence,omitempty"`
+	Roles        database.TextArray[string] `json:"roles,omitempty"`
 	// GrantID represents the project grant id
-	GrantID string
-	State   domain.UserGrantState
+	GrantID string                `json:"grant_id,omitempty"`
+	State   domain.UserGrantState `json:"state,omitempty"`
 
-	UserID             string
-	Username           string
-	UserType           domain.UserType
-	UserResourceOwner  string
-	FirstName          string
-	LastName           string
-	Email              string
-	DisplayName        string
-	AvatarURL          string
-	PreferredLoginName string
+	UserID             string          `json:"user_id,omitempty"`
+	Username           string          `json:"username,omitempty"`
+	UserType           domain.UserType `json:"user_type,omitempty"`
+	UserResourceOwner  string          `json:"user_resource_owner,omitempty"`
+	FirstName          string          `json:"first_name,omitempty"`
+	LastName           string          `json:"last_name,omitempty"`
+	Email              string          `json:"email,omitempty"`
+	DisplayName        string          `json:"display_name,omitempty"`
+	AvatarURL          string          `json:"avatar_url,omitempty"`
+	PreferredLoginName string          `json:"preferred_login_name,omitempty"`
 
-	ResourceOwner    string
-	OrgName          string
-	OrgPrimaryDomain string
+	ResourceOwner    string `json:"resource_owner,omitempty"`
+	OrgName          string `json:"org_name,omitempty"`
+	OrgPrimaryDomain string `json:"org_primary_domain,omitempty"`
 
-	ProjectID   string
-	ProjectName string
+	ProjectID   string `json:"project_id,omitempty"`
+	ProjectName string `json:"project_name,omitempty"`
+
+	GrantedOrgID     string `json:"granted_org_id,omitempty"`
+	GrantedOrgName   string `json:"granted_org_name,omitempty"`
+	GrantedOrgDomain string `json:"granted_org_domain,omitempty"`
 }
 
 type UserGrants struct {
@@ -137,6 +143,10 @@ func NewUserGrantRoleQuery(value string) (SearchQuery, error) {
 	return NewTextQuery(UserGrantRoles, value, TextListContains)
 }
 
+func NewUserGrantStateQuery(value domain.UserGrantState) (SearchQuery, error) {
+	return NewNumberQuery(UserGrantState, value, NumberEquals)
+}
+
 func NewUserGrantWithGrantedQuery(owner string) (SearchQuery, error) {
 	orgQuery, err := NewUserGrantResourceOwnerSearchQuery(owner)
 	if err != nil {
@@ -146,7 +156,7 @@ func NewUserGrantWithGrantedQuery(owner string) (SearchQuery, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newOrQuery(orgQuery, projectQuery)
+	return NewOrQuery(orgQuery, projectQuery)
 }
 
 func NewUserGrantContainsRolesSearchQuery(roles ...string) (SearchQuery, error) {
@@ -206,38 +216,34 @@ var (
 		name:  projection.UserGrantState,
 		table: userGrantTable,
 	}
-	UserGrantOwnerRemoved = Column{
-		name:  projection.UserGrantOwnerRemoved,
-		table: userGrantTable,
+	GrantedOrgsTable = table{
+		name:          projection.OrgProjectionTable,
+		alias:         "granted_orgs",
+		instanceIDCol: projection.OrgColumnInstanceID,
 	}
-	UserGrantUserOwnerRemoved = Column{
-		name:  projection.UserGrantUserOwnerRemoved,
-		table: userGrantTable,
+	GrantedOrgColumnId = Column{
+		name:  projection.OrgColumnID,
+		table: GrantedOrgsTable,
 	}
-	UserGrantProjectOwnerRemoved = Column{
-		name:  projection.UserGrantProjectOwnerRemoved,
-		table: userGrantTable,
+	GrantedOrgColumnName = Column{
+		name:  projection.OrgColumnName,
+		table: GrantedOrgsTable,
 	}
-	UserGrantGrantGrantedOrgRemoved = Column{
-		name:  projection.UserGrantGrantedOrgRemoved,
-		table: userGrantTable,
+	GrantedOrgColumnDomain = Column{
+		name:  projection.OrgColumnDomain,
+		table: GrantedOrgsTable,
 	}
 )
 
-func addUserGrantWithoutOwnerRemoved(eq map[string]interface{}) {
-	eq[UserGrantOwnerRemoved.identifier()] = false
-	eq[UserGrantUserOwnerRemoved.identifier()] = false
-	eq[UserGrantProjectOwnerRemoved.identifier()] = false
-	eq[UserGrantGrantGrantedOrgRemoved.identifier()] = false
-	addLoginNameWithoutOwnerRemoved(eq)
-}
-
-func (q *Queries) UserGrant(ctx context.Context, shouldTriggerBulk bool, withOwnerRemoved bool, queries ...SearchQuery) (grant *UserGrant, err error) {
+func (q *Queries) UserGrant(ctx context.Context, shouldTriggerBulk bool, queries ...SearchQuery) (grant *UserGrant, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	if shouldTriggerBulk {
-		ctx = projection.UserGrantProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerUserGrantProjection")
+		ctx, err = projection.UserGrantProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
 	query, scan := prepareUserGrantQuery(ctx, q.client)
@@ -245,12 +251,9 @@ func (q *Queries) UserGrant(ctx context.Context, shouldTriggerBulk bool, withOwn
 		query = q.toQuery(query)
 	}
 	eq := sq.Eq{UserGrantInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
-	if !withOwnerRemoved {
-		addUserGrantWithoutOwnerRemoved(eq)
-	}
 	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Fa1KW", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Fa1KW", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -260,25 +263,25 @@ func (q *Queries) UserGrant(ctx context.Context, shouldTriggerBulk bool, withOwn
 	return grant, err
 }
 
-func (q *Queries) UserGrants(ctx context.Context, queries *UserGrantsQueries, shouldTriggerBulk, withOwnerRemoved bool) (grants *UserGrants, err error) {
+func (q *Queries) UserGrants(ctx context.Context, queries *UserGrantsQueries, shouldTriggerBulk bool) (grants *UserGrants, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	if shouldTriggerBulk {
-		ctx = projection.UserGrantProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerUserGrantProjection")
+		ctx, err = projection.UserGrantProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("unable to trigger")
+		traceSpan.EndWithError(err)
 	}
 
 	query, scan := prepareUserGrantsQuery(ctx, q.client)
 	eq := sq.Eq{UserGrantInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
-	if !withOwnerRemoved {
-		addUserGrantWithoutOwnerRemoved(eq)
-	}
 	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-wXnQR", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-wXnQR", "Errors.Query.SQLStatement")
 	}
 
-	latestSequence, err := q.latestSequence(ctx, userGrantTable)
+	latestSequence, err := q.latestState(ctx, userGrantTable)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +294,7 @@ func (q *Queries) UserGrants(ctx context.Context, queries *UserGrantsQueries, sh
 		return nil, err
 	}
 
-	grants.LatestSequence = latestSequence
+	grants.State = latestSequence
 	return grants, nil
 }
 
@@ -322,12 +325,17 @@ func prepareUserGrantQuery(ctx context.Context, db prepareDatabase) (sq.SelectBu
 
 			UserGrantProjectID.identifier(),
 			ProjectColumnName.identifier(),
+
+			GrantedOrgColumnId.identifier(),
+			GrantedOrgColumnName.identifier(),
+			GrantedOrgColumnDomain.identifier(),
 		).
 			From(userGrantTable.identifier()).
 			LeftJoin(join(UserIDCol, UserGrantUserID)).
 			LeftJoin(join(HumanUserIDCol, UserGrantUserID)).
 			LeftJoin(join(OrgColumnID, UserGrantResourceOwner)).
 			LeftJoin(join(ProjectColumnID, UserGrantProjectID)).
+			LeftJoin(join(GrantedOrgColumnId, UserResourceOwnerCol)).
 			LeftJoin(join(LoginNameUserIDCol, UserGrantUserID) + db.Timetravel(call.Took(ctx))).
 			Where(
 				sq.Eq{LoginNameIsPrimaryCol.identifier(): true},
@@ -350,6 +358,10 @@ func prepareUserGrantQuery(ctx context.Context, db prepareDatabase) (sq.SelectBu
 				orgDomain sql.NullString
 
 				projectName sql.NullString
+
+				grantedOrgID     sql.NullString
+				grantedOrgName   sql.NullString
+				grantedOrgDomain sql.NullString
 			)
 
 			err := row.Scan(
@@ -378,12 +390,16 @@ func prepareUserGrantQuery(ctx context.Context, db prepareDatabase) (sq.SelectBu
 
 				&g.ProjectID,
 				&projectName,
+
+				&grantedOrgID,
+				&grantedOrgName,
+				&grantedOrgDomain,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-wIPkA", "Errors.UserGrant.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-wIPkA", "Errors.UserGrant.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-oQPcP", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-oQPcP", "Errors.Internal")
 			}
 
 			g.Username = username.String
@@ -398,7 +414,9 @@ func prepareUserGrantQuery(ctx context.Context, db prepareDatabase) (sq.SelectBu
 			g.OrgName = orgName.String
 			g.OrgPrimaryDomain = orgDomain.String
 			g.ProjectName = projectName.String
-
+			g.GrantedOrgID = grantedOrgID.String
+			g.GrantedOrgName = grantedOrgName.String
+			g.GrantedOrgDomain = grantedOrgDomain.String
 			return g, nil
 		}
 }
@@ -431,6 +449,10 @@ func prepareUserGrantsQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 			UserGrantProjectID.identifier(),
 			ProjectColumnName.identifier(),
 
+			GrantedOrgColumnId.identifier(),
+			GrantedOrgColumnName.identifier(),
+			GrantedOrgColumnDomain.identifier(),
+
 			countColumn.identifier(),
 		).
 			From(userGrantTable.identifier()).
@@ -438,6 +460,7 @@ func prepareUserGrantsQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 			LeftJoin(join(HumanUserIDCol, UserGrantUserID)).
 			LeftJoin(join(OrgColumnID, UserGrantResourceOwner)).
 			LeftJoin(join(ProjectColumnID, UserGrantProjectID)).
+			LeftJoin(join(GrantedOrgColumnId, UserResourceOwnerCol)).
 			LeftJoin(join(LoginNameUserIDCol, UserGrantUserID) + db.Timetravel(call.Took(ctx))).
 			Where(
 				sq.Eq{LoginNameIsPrimaryCol.identifier(): true},
@@ -461,6 +484,10 @@ func prepareUserGrantsQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 
 					orgName   sql.NullString
 					orgDomain sql.NullString
+
+					grantedOrgID     sql.NullString
+					grantedOrgName   sql.NullString
+					grantedOrgDomain sql.NullString
 
 					projectName sql.NullString
 				)
@@ -492,6 +519,10 @@ func prepareUserGrantsQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 					&g.ProjectID,
 					&projectName,
 
+					&grantedOrgID,
+					&grantedOrgName,
+					&grantedOrgDomain,
+
 					&count,
 				)
 				if err != nil {
@@ -510,12 +541,15 @@ func prepareUserGrantsQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 				g.OrgName = orgName.String
 				g.OrgPrimaryDomain = orgDomain.String
 				g.ProjectName = projectName.String
+				g.GrantedOrgID = grantedOrgID.String
+				g.GrantedOrgName = grantedOrgName.String
+				g.GrantedOrgDomain = grantedOrgDomain.String
 
 				userGrants = append(userGrants, g)
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-iGvmP", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-iGvmP", "Errors.Query.CloseRows")
 			}
 
 			return &UserGrants{

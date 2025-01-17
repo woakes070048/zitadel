@@ -2,38 +2,39 @@ package project
 
 import (
 	"context"
-	"encoding/json"
-
-	"github.com/zitadel/zitadel/internal/eventstore"
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
-	APIConfigAddedType                = applicationEventTypePrefix + "config.api.added"
-	APIConfigChangedType              = applicationEventTypePrefix + "config.api.changed"
-	APIConfigSecretChangedType        = applicationEventTypePrefix + "config.api.secret.changed"
-	APIClientSecretCheckSucceededType = applicationEventTypePrefix + "api.secret.check.succeeded"
-	APIClientSecretCheckFailedType    = applicationEventTypePrefix + "api.secret.check.failed"
+	APIConfigAddedType             = applicationEventTypePrefix + "config.api.added"
+	APIConfigChangedType           = applicationEventTypePrefix + "config.api.changed"
+	APIConfigSecretChangedType     = applicationEventTypePrefix + "config.api.secret.changed"
+	APIConfigSecretHashUpdatedType = applicationEventTypePrefix + "config.api.secret.updated"
 )
 
 type APIConfigAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	AppID          string                   `json:"appId"`
-	ClientID       string                   `json:"clientId,omitempty"`
-	ClientSecret   *crypto.CryptoValue      `json:"clientSecret,omitempty"`
+	AppID    string `json:"appId"`
+	ClientID string `json:"clientId,omitempty"`
+
+	// New events only use EncodedHash. However, the ClientSecret field
+	// is preserved to handle events older than the switch to Passwap.
+	ClientSecret *crypto.CryptoValue `json:"clientSecret,omitempty"`
+	HashedSecret string              `json:"hashedSecret,omitempty"`
+
 	AuthMethodType domain.APIAuthMethodType `json:"authMethodType,omitempty"`
 }
 
-func (e *APIConfigAddedEvent) Data() interface{} {
+func (e *APIConfigAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *APIConfigAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *APIConfigAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -42,7 +43,7 @@ func NewAPIConfigAddedEvent(
 	aggregate *eventstore.Aggregate,
 	appID,
 	clientID string,
-	clientSecret *crypto.CryptoValue,
+	hashedSecret string,
 	authMethodType domain.APIAuthMethodType,
 ) *APIConfigAddedEvent {
 	return &APIConfigAddedEvent{
@@ -53,7 +54,7 @@ func NewAPIConfigAddedEvent(
 		),
 		AppID:          appID,
 		ClientID:       clientID,
-		ClientSecret:   clientSecret,
+		HashedSecret:   hashedSecret,
 		AuthMethodType: authMethodType,
 	}
 }
@@ -77,14 +78,14 @@ func (e *APIConfigAddedEvent) Validate(cmd eventstore.Command) bool {
 	return true
 }
 
-func APIConfigAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func APIConfigAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &APIConfigAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "API-BFd15", "unable to unmarshal api config")
+		return nil, zerrors.ThrowInternal(err, "API-BFd15", "unable to unmarshal api config")
 	}
 
 	return e, nil
@@ -94,15 +95,14 @@ type APIConfigChangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
 	AppID          string                    `json:"appId"`
-	ClientSecret   *crypto.CryptoValue       `json:"clientSecret,omitempty"`
 	AuthMethodType *domain.APIAuthMethodType `json:"authMethodType,omitempty"`
 }
 
-func (e *APIConfigChangedEvent) Data() interface{} {
+func (e *APIConfigChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *APIConfigChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *APIConfigChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -113,7 +113,7 @@ func NewAPIConfigChangedEvent(
 	changes []APIConfigChanges,
 ) (*APIConfigChangedEvent, error) {
 	if len(changes) == 0 {
-		return nil, errors.ThrowPreconditionFailed(nil, "API-i8idç", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "API-i8idç", "Errors.NoChangesFound")
 	}
 
 	changeEvent := &APIConfigChangedEvent{
@@ -138,14 +138,14 @@ func ChangeAPIAuthMethodType(authMethodType domain.APIAuthMethodType) func(event
 	}
 }
 
-func APIConfigChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func APIConfigChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &APIConfigChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "API-BFd15", "unable to unmarshal api config")
+		return nil, zerrors.ThrowInternal(err, "API-BFd15", "unable to unmarshal api config")
 	}
 
 	return e, nil
@@ -154,15 +154,19 @@ func APIConfigChangedEventMapper(event *repository.Event) (eventstore.Event, err
 type APIConfigSecretChangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	AppID        string              `json:"appId"`
+	AppID string `json:"appId"`
+
+	// New events only use EncodedHash. However, the ClientSecret field
+	// is preserved to handle events older than the switch to Passwap.
 	ClientSecret *crypto.CryptoValue `json:"clientSecret,omitempty"`
+	HashedSecret string              `json:"hashedSecret,omitempty"`
 }
 
-func (e *APIConfigSecretChangedEvent) Data() interface{} {
+func (e *APIConfigSecretChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *APIConfigSecretChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *APIConfigSecretChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -170,7 +174,7 @@ func NewAPIConfigSecretChangedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	appID string,
-	clientSecret *crypto.CryptoValue,
+	hashedSecret string,
 ) *APIConfigSecretChangedEvent {
 	return &APIConfigSecretChangedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -179,103 +183,55 @@ func NewAPIConfigSecretChangedEvent(
 			APIConfigSecretChangedType,
 		),
 		AppID:        appID,
-		ClientSecret: clientSecret,
+		HashedSecret: hashedSecret,
 	}
 }
 
-func APIConfigSecretChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func APIConfigSecretChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &APIConfigSecretChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "API-M893d", "unable to unmarshal api config")
+		return nil, zerrors.ThrowInternal(err, "API-M893d", "unable to unmarshal api config")
 	}
 
 	return e, nil
 }
 
-type APIConfigSecretCheckSucceededEvent struct {
-	eventstore.BaseEvent `json:"-"`
+type APIConfigSecretHashUpdatedEvent struct {
+	*eventstore.BaseEvent `json:"-"`
 
-	AppID string `json:"appId"`
+	AppID        string `json:"appId"`
+	HashedSecret string `json:"hashedSecret,omitempty"`
 }
 
-func (e *APIConfigSecretCheckSucceededEvent) Data() interface{} {
-	return e
-}
-
-func (e *APIConfigSecretCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return nil
-}
-
-func NewAPIConfigSecretCheckSucceededEvent(
+func NewAPIConfigSecretHashUpdatedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	appID string,
-) *APIConfigSecretCheckSucceededEvent {
-	return &APIConfigSecretCheckSucceededEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
+	hashedSecret string,
+) *APIConfigSecretHashUpdatedEvent {
+	return &APIConfigSecretHashUpdatedEvent{
+		BaseEvent: eventstore.NewBaseEventForPush(
 			ctx,
 			aggregate,
-			APIClientSecretCheckSucceededType,
+			APIConfigSecretHashUpdatedType,
 		),
-		AppID: appID,
+		AppID:        appID,
+		HashedSecret: hashedSecret,
 	}
 }
 
-func APIConfigSecretCheckSucceededEventMapper(event *repository.Event) (eventstore.Event, error) {
-	e := &APIConfigSecretCheckSucceededEvent{
-		BaseEvent: *eventstore.BaseEventFromRepo(event),
-	}
-
-	err := json.Unmarshal(event.Data, e)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "API-837gV", "unable to unmarshal api config")
-	}
-
-	return e, nil
+func (e *APIConfigSecretHashUpdatedEvent) SetBaseEvent(b *eventstore.BaseEvent) {
+	e.BaseEvent = b
 }
 
-type APIConfigSecretCheckFailedEvent struct {
-	eventstore.BaseEvent `json:"-"`
-
-	AppID string `json:"appId"`
-}
-
-func (e *APIConfigSecretCheckFailedEvent) Data() interface{} {
+func (e *APIConfigSecretHashUpdatedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *APIConfigSecretCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *APIConfigSecretHashUpdatedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
-}
-
-func NewAPIConfigSecretCheckFailedEvent(
-	ctx context.Context,
-	aggregate *eventstore.Aggregate,
-	appID string,
-) *APIConfigSecretCheckFailedEvent {
-	return &APIConfigSecretCheckFailedEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
-			ctx,
-			aggregate,
-			APIClientSecretCheckFailedType,
-		),
-		AppID: appID,
-	}
-}
-
-func APIConfigSecretCheckFailedEventMapper(event *repository.Event) (eventstore.Event, error) {
-	e := &APIConfigSecretCheckFailedEvent{
-		BaseEvent: *eventstore.BaseEventFromRepo(event),
-	}
-
-	err := json.Unmarshal(event.Data, e)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "API-987g%", "unable to unmarshal api config")
-	}
-
-	return e, nil
 }

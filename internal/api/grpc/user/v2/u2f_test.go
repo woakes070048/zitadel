@@ -12,9 +12,9 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/grpc"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
-	object "github.com/zitadel/zitadel/pkg/grpc/object/v2beta"
-	user "github.com/zitadel/zitadel/pkg/grpc/user/v2beta"
+	"github.com/zitadel/zitadel/internal/zerrors"
+	"github.com/zitadel/zitadel/pkg/grpc/object/v2"
+	"github.com/zitadel/zitadel/pkg/grpc/user/v2"
 )
 
 func Test_u2fRegistrationDetailsToPb(t *testing.T) {
@@ -50,7 +50,7 @@ func Test_u2fRegistrationDetailsToPb(t *testing.T) {
 				},
 				err: nil,
 			},
-			wantErr: caos_errs.ThrowInternal(nil, "USERv2-Dohr6", "Errors.Internal"),
+			wantErr: zerrors.ThrowInternal(nil, "USERv2-Dohr6", "Errors.Internal"),
 		},
 		{
 			name: "ok",

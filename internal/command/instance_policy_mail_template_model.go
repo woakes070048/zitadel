@@ -6,7 +6,6 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 )
@@ -21,6 +20,7 @@ func NewInstanceMailTemplateWriteModel(ctx context.Context) *InstanceMailTemplat
 			WriteModel: eventstore.WriteModel{
 				AggregateID:   authz.GetInstance(ctx).InstanceID(),
 				ResourceOwner: authz.GetInstance(ctx).InstanceID(),
+				InstanceID:    authz.GetInstance(ctx).InstanceID(),
 			},
 		},
 	}

@@ -15,11 +15,8 @@ type passwordFormData struct {
 }
 
 func (l *Login) renderPassword(w http.ResponseWriter, r *http.Request, authReq *domain.AuthRequest, err error) {
-	var errID, errMessage string
-	if err != nil {
-		errID, errMessage = l.getErrorMessage(r, err)
-	}
-	data := l.getUserData(r, authReq, "Password.Title", "Password.Description", errID, errMessage)
+	translator := l.getTranslator(r.Context(), authReq)
+	data := l.getUserData(r, authReq, translator, "Password.Title", "Password.Description", err)
 	funcs := map[string]interface{}{
 		"showPasswordReset": func() bool {
 			if authReq.LoginPolicy != nil {
@@ -28,12 +25,12 @@ func (l *Login) renderPassword(w http.ResponseWriter, r *http.Request, authReq *
 			return true
 		},
 	}
-	l.renderer.RenderTemplate(w, r, l.getTranslator(r.Context(), authReq), l.renderer.Templates[tmplPassword], data, funcs)
+	l.renderer.RenderTemplate(w, r, translator, l.renderer.Templates[tmplPassword], data, funcs)
 }
 
 func (l *Login) handlePasswordCheck(w http.ResponseWriter, r *http.Request) {
 	data := new(passwordFormData)
-	authReq, err := l.getAuthRequestAndParseData(r, data)
+	authReq, err := l.ensureAuthRequestAndParseData(r, data)
 	if err != nil {
 		l.renderError(w, r, authReq, err)
 		return

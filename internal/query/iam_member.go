@@ -9,9 +9,9 @@ import (
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -44,20 +44,16 @@ var (
 		name:  projection.MemberResourceOwner,
 		table: instanceMemberTable,
 	}
+	InstanceMemberUserResourceOwner = Column{
+		name:  projection.MemberUserResourceOwner,
+		table: instanceMemberTable,
+	}
 	InstanceMemberInstanceID = Column{
 		name:  projection.MemberInstanceID,
 		table: instanceMemberTable,
 	}
 	InstanceMemberIAMID = Column{
 		name:  projection.InstanceMemberIAMIDCol,
-		table: instanceMemberTable,
-	}
-	InstanceMemberOwnerRemoved = Column{
-		name:  projection.MemberOwnerRemoved,
-		table: instanceMemberTable,
-	}
-	InstanceMemberOwnerRemovedUser = Column{
-		name:  projection.MemberUserOwnerRemoved,
 		table: instanceMemberTable,
 	}
 )
@@ -71,27 +67,18 @@ func (q *IAMMembersQuery) toQuery(query sq.SelectBuilder) sq.SelectBuilder {
 		toQuery(query)
 }
 
-func addIamMemberWithoutOwnerRemoved(eq map[string]interface{}) {
-	eq[InstanceMemberOwnerRemoved.identifier()] = false
-	eq[InstanceMemberOwnerRemovedUser.identifier()] = false
-}
-
-func (q *Queries) IAMMembers(ctx context.Context, queries *IAMMembersQuery, withOwnerRemoved bool) (members *Members, err error) {
+func (q *Queries) IAMMembers(ctx context.Context, queries *IAMMembersQuery) (members *Members, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	query, scan := prepareInstanceMembersQuery(ctx, q.client)
 	eq := sq.Eq{InstanceMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
-	if !withOwnerRemoved {
-		addIamMemberWithoutOwnerRemoved(eq)
-		addLoginNameWithoutOwnerRemoved(eq)
-	}
 	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
 	}
 
-	currentSequence, err := q.latestSequence(ctx, instanceMemberTable)
+	currentSequence, err := q.latestState(ctx, instanceMemberTable)
 	if err != nil {
 		return nil, err
 	}
@@ -101,9 +88,9 @@ func (q *Queries) IAMMembers(ctx context.Context, queries *IAMMembersQuery, with
 		return err
 	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
 	}
-	members.LatestSequence = currentSequence
+	members.State = currentSequence
 	return members, err
 }
 
@@ -113,6 +100,7 @@ func prepareInstanceMembersQuery(ctx context.Context, db prepareDatabase) (sq.Se
 			InstanceMemberChangeDate.identifier(),
 			InstanceMemberSequence.identifier(),
 			InstanceMemberResourceOwner.identifier(),
+			InstanceMemberUserResourceOwner.identifier(),
 			InstanceMemberUserID.identifier(),
 			InstanceMemberRoles.identifier(),
 			LoginNameNameCol.identifier(),
@@ -155,6 +143,7 @@ func prepareInstanceMembersQuery(ctx context.Context, db prepareDatabase) (sq.Se
 					&member.ChangeDate,
 					&member.Sequence,
 					&member.ResourceOwner,
+					&member.UserResourceOwner,
 					&member.UserID,
 					&member.Roles,
 					&preferredLoginName,
@@ -189,7 +178,7 @@ func prepareInstanceMembersQuery(ctx context.Context, db prepareDatabase) (sq.Se
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
 			}
 
 			return &Members{

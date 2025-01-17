@@ -19,7 +19,7 @@ func (s *Server) ListActions(ctx context.Context, req *mgmt_pb.ListActionsReques
 		return nil, err
 	}
 	return &mgmt_pb.ListActionsResponse{
-		Details: obj_grpc.ToListDetails(actions.Count, actions.Sequence, actions.Timestamp),
+		Details: obj_grpc.ToListDetails(actions.Count, actions.Sequence, actions.LastRun),
 		Result:  action_grpc.ActionsToPb(actions.Actions),
 	}, nil
 }
@@ -65,13 +65,16 @@ func (s *Server) UpdateAction(ctx context.Context, req *mgmt_pb.UpdateActionRequ
 
 func (s *Server) DeactivateAction(ctx context.Context, req *mgmt_pb.DeactivateActionRequest) (*mgmt_pb.DeactivateActionResponse, error) {
 	details, err := s.command.DeactivateAction(ctx, req.Id, authz.GetCtxData(ctx).OrgID)
+	if err != nil {
+		return nil, err
+	}
 	return &mgmt_pb.DeactivateActionResponse{
 		Details: obj_grpc.AddToDetailsPb(
 			details.Sequence,
 			details.EventDate,
 			details.ResourceOwner,
 		),
-	}, err
+	}, nil
 }
 
 func (s *Server) ReactivateAction(ctx context.Context, req *mgmt_pb.ReactivateActionRequest) (*mgmt_pb.ReactivateActionResponse, error) {
@@ -89,7 +92,7 @@ func (s *Server) ReactivateAction(ctx context.Context, req *mgmt_pb.ReactivateAc
 }
 
 func (s *Server) DeleteAction(ctx context.Context, req *mgmt_pb.DeleteActionRequest) (*mgmt_pb.DeleteActionResponse, error) {
-	flowTypes, err := s.query.GetFlowTypesOfActionID(ctx, req.Id, false)
+	flowTypes, err := s.query.GetFlowTypesOfActionID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}

@@ -6,68 +6,82 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"regexp"
 	"testing"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/muhlemmer/gu"
 	"github.com/stretchr/testify/require"
 
+	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	expectedSessionQuery = regexp.QuoteMeta(`SELECT projections.sessions5.id,` +
-		` projections.sessions5.creation_date,` +
-		` projections.sessions5.change_date,` +
-		` projections.sessions5.sequence,` +
-		` projections.sessions5.state,` +
-		` projections.sessions5.resource_owner,` +
-		` projections.sessions5.creator,` +
-		` projections.sessions5.user_id,` +
-		` projections.sessions5.user_checked_at,` +
-		` projections.login_names2.login_name,` +
-		` projections.users8_humans.display_name,` +
-		` projections.users8.resource_owner,` +
-		` projections.sessions5.password_checked_at,` +
-		` projections.sessions5.intent_checked_at,` +
-		` projections.sessions5.webauthn_checked_at,` +
-		` projections.sessions5.webauthn_user_verified,` +
-		` projections.sessions5.totp_checked_at,` +
-		` projections.sessions5.otp_sms_checked_at,` +
-		` projections.sessions5.otp_email_checked_at,` +
-		` projections.sessions5.metadata,` +
-		` projections.sessions5.token_id` +
-		` FROM projections.sessions5` +
-		` LEFT JOIN projections.login_names2 ON projections.sessions5.user_id = projections.login_names2.user_id AND projections.sessions5.instance_id = projections.login_names2.instance_id` +
-		` LEFT JOIN projections.users8_humans ON projections.sessions5.user_id = projections.users8_humans.user_id AND projections.sessions5.instance_id = projections.users8_humans.instance_id` +
-		` LEFT JOIN projections.users8 ON projections.sessions5.user_id = projections.users8.id AND projections.sessions5.instance_id = projections.users8.instance_id` +
+	expectedSessionQuery = regexp.QuoteMeta(`SELECT projections.sessions8.id,` +
+		` projections.sessions8.creation_date,` +
+		` projections.sessions8.change_date,` +
+		` projections.sessions8.sequence,` +
+		` projections.sessions8.state,` +
+		` projections.sessions8.resource_owner,` +
+		` projections.sessions8.creator,` +
+		` projections.sessions8.user_id,` +
+		` projections.sessions8.user_resource_owner,` +
+		` projections.sessions8.user_checked_at,` +
+		` projections.login_names3.login_name,` +
+		` projections.users13_humans.display_name,` +
+		` projections.sessions8.password_checked_at,` +
+		` projections.sessions8.intent_checked_at,` +
+		` projections.sessions8.webauthn_checked_at,` +
+		` projections.sessions8.webauthn_user_verified,` +
+		` projections.sessions8.totp_checked_at,` +
+		` projections.sessions8.otp_sms_checked_at,` +
+		` projections.sessions8.otp_email_checked_at,` +
+		` projections.sessions8.metadata,` +
+		` projections.sessions8.token_id,` +
+		` projections.sessions8.user_agent_fingerprint_id,` +
+		` projections.sessions8.user_agent_ip,` +
+		` projections.sessions8.user_agent_description,` +
+		` projections.sessions8.user_agent_header,` +
+		` projections.sessions8.expiration` +
+		` FROM projections.sessions8` +
+		` LEFT JOIN projections.login_names3 ON projections.sessions8.user_id = projections.login_names3.user_id AND projections.sessions8.instance_id = projections.login_names3.instance_id` +
+		` LEFT JOIN projections.users13_humans ON projections.sessions8.user_id = projections.users13_humans.user_id AND projections.sessions8.instance_id = projections.users13_humans.instance_id` +
+		` LEFT JOIN projections.users13 ON projections.sessions8.user_id = projections.users13.id AND projections.sessions8.instance_id = projections.users13.instance_id` +
 		` AS OF SYSTEM TIME '-1 ms'`)
-	expectedSessionsQuery = regexp.QuoteMeta(`SELECT projections.sessions5.id,` +
-		` projections.sessions5.creation_date,` +
-		` projections.sessions5.change_date,` +
-		` projections.sessions5.sequence,` +
-		` projections.sessions5.state,` +
-		` projections.sessions5.resource_owner,` +
-		` projections.sessions5.creator,` +
-		` projections.sessions5.user_id,` +
-		` projections.sessions5.user_checked_at,` +
-		` projections.login_names2.login_name,` +
-		` projections.users8_humans.display_name,` +
-		` projections.users8.resource_owner,` +
-		` projections.sessions5.password_checked_at,` +
-		` projections.sessions5.intent_checked_at,` +
-		` projections.sessions5.webauthn_checked_at,` +
-		` projections.sessions5.webauthn_user_verified,` +
-		` projections.sessions5.totp_checked_at,` +
-		` projections.sessions5.otp_sms_checked_at,` +
-		` projections.sessions5.otp_email_checked_at,` +
-		` projections.sessions5.metadata,` +
+	expectedSessionsQuery = regexp.QuoteMeta(`SELECT projections.sessions8.id,` +
+		` projections.sessions8.creation_date,` +
+		` projections.sessions8.change_date,` +
+		` projections.sessions8.sequence,` +
+		` projections.sessions8.state,` +
+		` projections.sessions8.resource_owner,` +
+		` projections.sessions8.creator,` +
+		` projections.sessions8.user_id,` +
+		` projections.sessions8.user_resource_owner,` +
+		` projections.sessions8.user_checked_at,` +
+		` projections.login_names3.login_name,` +
+		` projections.users13_humans.display_name,` +
+		` projections.sessions8.password_checked_at,` +
+		` projections.sessions8.intent_checked_at,` +
+		` projections.sessions8.webauthn_checked_at,` +
+		` projections.sessions8.webauthn_user_verified,` +
+		` projections.sessions8.totp_checked_at,` +
+		` projections.sessions8.otp_sms_checked_at,` +
+		` projections.sessions8.otp_email_checked_at,` +
+		` projections.sessions8.metadata,` +
+		` projections.sessions8.user_agent_fingerprint_id,` +
+		` projections.sessions8.user_agent_ip,` +
+		` projections.sessions8.user_agent_description,` +
+		` projections.sessions8.user_agent_header,` +
+		` projections.sessions8.expiration,` +
 		` COUNT(*) OVER ()` +
-		` FROM projections.sessions5` +
-		` LEFT JOIN projections.login_names2 ON projections.sessions5.user_id = projections.login_names2.user_id AND projections.sessions5.instance_id = projections.login_names2.instance_id` +
-		` LEFT JOIN projections.users8_humans ON projections.sessions5.user_id = projections.users8_humans.user_id AND projections.sessions5.instance_id = projections.users8_humans.instance_id` +
-		` LEFT JOIN projections.users8 ON projections.sessions5.user_id = projections.users8.id AND projections.sessions5.instance_id = projections.users8.instance_id` +
+		` FROM projections.sessions8` +
+		` LEFT JOIN projections.login_names3 ON projections.sessions8.user_id = projections.login_names3.user_id AND projections.sessions8.instance_id = projections.login_names3.instance_id` +
+		` LEFT JOIN projections.users13_humans ON projections.sessions8.user_id = projections.users13_humans.user_id AND projections.sessions8.instance_id = projections.users13_humans.instance_id` +
+		` LEFT JOIN projections.users13 ON projections.sessions8.user_id = projections.users13.id AND projections.sessions8.instance_id = projections.users13.instance_id` +
 		` AS OF SYSTEM TIME '-1 ms'`)
 
 	sessionCols = []string{
@@ -79,10 +93,10 @@ var (
 		"resource_owner",
 		"creator",
 		"user_id",
+		"user_resource_owner",
 		"user_checked_at",
 		"login_name",
 		"display_name",
-		"user_resource_owner",
 		"password_checked_at",
 		"intent_checked_at",
 		"webauthn_checked_at",
@@ -92,6 +106,11 @@ var (
 		"otp_email_checked_at",
 		"metadata",
 		"token",
+		"user_agent_fingerprint_id",
+		"user_agent_ip",
+		"user_agent_description",
+		"user_agent_header",
+		"expiration",
 	}
 
 	sessionsCols = []string{
@@ -103,10 +122,10 @@ var (
 		"resource_owner",
 		"creator",
 		"user_id",
+		"user_resource_owner",
 		"user_checked_at",
 		"login_name",
 		"display_name",
-		"user_resource_owner",
 		"password_checked_at",
 		"intent_checked_at",
 		"webauthn_checked_at",
@@ -115,6 +134,11 @@ var (
 		"otp_sms_checked_at",
 		"otp_email_checked_at",
 		"metadata",
+		"user_agent_fingerprint_id",
+		"user_agent_ip",
+		"user_agent_description",
+		"user_agent_header",
+		"expiration",
 		"count",
 	}
 )
@@ -159,10 +183,10 @@ func Test_SessionsPrepare(t *testing.T) {
 							"ro",
 							"creator",
 							"user-id",
+							"resourceOwner",
 							testNow,
 							"login-name",
 							"display-name",
-							"resourceOwner",
 							testNow,
 							testNow,
 							testNow,
@@ -171,6 +195,11 @@ func Test_SessionsPrepare(t *testing.T) {
 							testNow,
 							testNow,
 							[]byte(`{"key": "dmFsdWU="}`),
+							"fingerPrintID",
+							"1.2.3.4",
+							"agentDescription",
+							[]byte(`{"foo":["foo","bar"]}`),
+							testNow,
 						},
 					},
 				),
@@ -217,6 +246,13 @@ func Test_SessionsPrepare(t *testing.T) {
 						Metadata: map[string][]byte{
 							"key": []byte("value"),
 						},
+						UserAgent: domain.UserAgent{
+							FingerprintID: gu.Ptr("fingerPrintID"),
+							IP:            net.IPv4(1, 2, 3, 4),
+							Description:   gu.Ptr("agentDescription"),
+							Header:        http.Header{"foo": []string{"foo", "bar"}},
+						},
+						Expiration: testNow,
 					},
 				},
 			},
@@ -238,10 +274,10 @@ func Test_SessionsPrepare(t *testing.T) {
 							"ro",
 							"creator",
 							"user-id",
+							"resourceOwner",
 							testNow,
 							"login-name",
 							"display-name",
-							"resourceOwner",
 							testNow,
 							testNow,
 							testNow,
@@ -250,6 +286,11 @@ func Test_SessionsPrepare(t *testing.T) {
 							testNow,
 							testNow,
 							[]byte(`{"key": "dmFsdWU="}`),
+							"fingerPrintID",
+							"1.2.3.4",
+							"agentDescription",
+							[]byte(`{"foo":["foo","bar"]}`),
+							testNow,
 						},
 						{
 							"session-id2",
@@ -260,10 +301,10 @@ func Test_SessionsPrepare(t *testing.T) {
 							"ro",
 							"creator2",
 							"user-id2",
+							"resourceOwner",
 							testNow,
 							"login-name2",
 							"display-name2",
-							"resourceOwner",
 							testNow,
 							testNow,
 							testNow,
@@ -272,6 +313,11 @@ func Test_SessionsPrepare(t *testing.T) {
 							testNow,
 							testNow,
 							[]byte(`{"key": "dmFsdWU="}`),
+							"fingerPrintID",
+							"1.2.3.4",
+							"agentDescription",
+							[]byte(`{"foo":["foo","bar"]}`),
+							testNow,
 						},
 					},
 				),
@@ -318,6 +364,13 @@ func Test_SessionsPrepare(t *testing.T) {
 						Metadata: map[string][]byte{
 							"key": []byte("value"),
 						},
+						UserAgent: domain.UserAgent{
+							FingerprintID: gu.Ptr("fingerPrintID"),
+							IP:            net.IPv4(1, 2, 3, 4),
+							Description:   gu.Ptr("agentDescription"),
+							Header:        http.Header{"foo": []string{"foo", "bar"}},
+						},
+						Expiration: testNow,
 					},
 					{
 						ID:            "session-id2",
@@ -356,6 +409,13 @@ func Test_SessionsPrepare(t *testing.T) {
 						Metadata: map[string][]byte{
 							"key": []byte("value"),
 						},
+						UserAgent: domain.UserAgent{
+							FingerprintID: gu.Ptr("fingerPrintID"),
+							IP:            net.IPv4(1, 2, 3, 4),
+							Description:   gu.Ptr("agentDescription"),
+							Header:        http.Header{"foo": []string{"foo", "bar"}},
+						},
+						Expiration: testNow,
 					},
 				},
 			},
@@ -406,7 +466,7 @@ func Test_SessionPrepare(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -430,10 +490,10 @@ func Test_SessionPrepare(t *testing.T) {
 						"ro",
 						"creator",
 						"user-id",
+						"resourceOwner",
 						testNow,
 						"login-name",
 						"display-name",
-						"resourceOwner",
 						testNow,
 						testNow,
 						testNow,
@@ -443,6 +503,11 @@ func Test_SessionPrepare(t *testing.T) {
 						testNow,
 						[]byte(`{"key": "dmFsdWU="}`),
 						"tokenID",
+						"fingerPrintID",
+						"1.2.3.4",
+						"agentDescription",
+						[]byte(`{"foo":["foo","bar"]}`),
+						testNow,
 					},
 				),
 			},
@@ -483,6 +548,13 @@ func Test_SessionPrepare(t *testing.T) {
 				Metadata: map[string][]byte{
 					"key": []byte("value"),
 				},
+				UserAgent: domain.UserAgent{
+					FingerprintID: gu.Ptr("fingerPrintID"),
+					IP:            net.IPv4(1, 2, 3, 4),
+					Description:   gu.Ptr("agentDescription"),
+					Header:        http.Header{"foo": []string{"foo", "bar"}},
+				},
+				Expiration: testNow,
 			},
 		},
 		{
@@ -518,5 +590,159 @@ func prepareSessionQueryTesting(t *testing.T, token string) func(context.Context
 			require.Equal(t, tokenID, token)
 			return session, err
 		}
+	}
+}
+
+func Test_sessionCheckPermission(t *testing.T) {
+	type args struct {
+		ctx             context.Context
+		resourceOwner   string
+		creator         string
+		useragent       domain.UserAgent
+		userFactor      SessionUserFactor
+		permissionCheck domain.PermissionCheck
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "permission check, no user in context",
+			args: args{
+				ctx:             authz.NewMockContextWithAgent("instance", "org", "", ""),
+				resourceOwner:   "instance",
+				creator:         "creator",
+				permissionCheck: expectedFailedPermissionCheck("instance", ""),
+			},
+			wantErr: true,
+		},
+		{
+			name: "permission check, factor, no user in context",
+			args: args{
+				ctx:             authz.NewMockContextWithAgent("instance", "org", "", ""),
+				resourceOwner:   "instance",
+				creator:         "creator",
+				userFactor:      SessionUserFactor{ResourceOwner: "resourceowner", UserID: "user"},
+				permissionCheck: expectedFailedPermissionCheck("resourceowner", "user"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "no permission check, creator",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "user",
+			},
+			wantErr: false,
+		},
+		{
+			name: "no permission check, same user",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "creator",
+				userFactor:    SessionUserFactor{UserID: "user"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "no permission check, same useragent",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user1", "agent"),
+				resourceOwner: "instance",
+				creator:       "creator",
+				userFactor:    SessionUserFactor{UserID: "user2"},
+				useragent: domain.UserAgent{
+					FingerprintID: gu.Ptr("agent"),
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "permission check, factor",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "not-user",
+				useragent: domain.UserAgent{
+					FingerprintID: gu.Ptr("not-agent"),
+				},
+				userFactor:      SessionUserFactor{UserID: "user2", ResourceOwner: "resourceowner2"},
+				permissionCheck: expectedSuccessfulPermissionCheck("resourceowner2", "user2"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "permission check, factor, error",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "not-user",
+				useragent: domain.UserAgent{
+					FingerprintID: gu.Ptr("not-agent"),
+				},
+				userFactor:      SessionUserFactor{UserID: "user2", ResourceOwner: "resourceowner2"},
+				permissionCheck: expectedFailedPermissionCheck("resourceowner2", "user2"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "permission check",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "not-user",
+				useragent: domain.UserAgent{
+					FingerprintID: gu.Ptr("not-agent"),
+				},
+				userFactor:      SessionUserFactor{},
+				permissionCheck: expectedSuccessfulPermissionCheck("instance", ""),
+			},
+			wantErr: false,
+		},
+		{
+			name: "permission check, error",
+			args: args{
+				ctx:           authz.NewMockContextWithAgent("instance", "org", "user", "agent"),
+				resourceOwner: "instance",
+				creator:       "not-user",
+				useragent: domain.UserAgent{
+					FingerprintID: gu.Ptr("not-agent"),
+				},
+				userFactor:      SessionUserFactor{},
+				permissionCheck: expectedFailedPermissionCheck("instance", ""),
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sessionCheckPermission(tt.args.ctx, tt.args.resourceOwner, tt.args.creator, tt.args.useragent, tt.args.userFactor, tt.args.permissionCheck)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func expectedSuccessfulPermissionCheck(resourceOwner, userID string) func(ctx context.Context, permission, orgID, resourceID string) (err error) {
+	return func(ctx context.Context, permission, orgID, resourceID string) (err error) {
+		if orgID == resourceOwner && resourceID == userID {
+			return nil
+		}
+		return fmt.Errorf("permission check failed: %s %s", orgID, resourceID)
+	}
+}
+
+func expectedFailedPermissionCheck(resourceOwner, userID string) func(ctx context.Context, permission, orgID, resourceID string) (err error) {
+	return func(ctx context.Context, permission, orgID, resourceID string) (err error) {
+		if orgID == resourceOwner && resourceID == userID {
+			return fmt.Errorf("permission check failed: %s %s", orgID, resourceID)
+		}
+		return nil
 	}
 }

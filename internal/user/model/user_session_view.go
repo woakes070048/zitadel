@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errors "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type UserSessionView struct {
@@ -27,6 +27,7 @@ type UserSessionView struct {
 	MultiFactorVerification      time.Time
 	MultiFactorVerificationType  domain.MFAType
 	Sequence                     uint64
+	ID                           string
 }
 
 type UserSessionSearchRequest struct {
@@ -64,7 +65,7 @@ type UserSessionSearchResponse struct {
 
 func (r *UserSessionSearchRequest) EnsureLimit(limit uint64) error {
 	if r.Limit > limit {
-		return caos_errors.ThrowInvalidArgument(nil, "SEARCH-27ifs", "Errors.Limit.ExceedsDefault")
+		return zerrors.ThrowInvalidArgument(nil, "SEARCH-27ifs", "Errors.Limit.ExceedsDefault")
 	}
 	if r.Limit == 0 {
 		r.Limit = limit

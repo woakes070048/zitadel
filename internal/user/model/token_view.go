@@ -1,10 +1,10 @@
 package model
 
 import (
-	"github.com/zitadel/zitadel/internal/domain"
-	caos_errors "github.com/zitadel/zitadel/internal/errors"
-
 	"time"
+
+	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type TokenView struct {
@@ -22,6 +22,8 @@ type TokenView struct {
 	PreferredLanguage string
 	RefreshTokenID    string
 	IsPAT             bool
+	Reason            domain.TokenReason
+	Actor             *domain.TokenActor
 }
 
 type TokenSearchRequest struct {
@@ -61,7 +63,7 @@ type TokenSearchResponse struct {
 
 func (r *TokenSearchRequest) EnsureLimit(limit uint64) error {
 	if r.Limit > limit {
-		return caos_errors.ThrowInvalidArgument(nil, "SEARCH-M0fse", "Errors.Limit.ExceedsDefault")
+		return zerrors.ThrowInvalidArgument(nil, "SEARCH-M0fse", "Errors.Limit.ExceedsDefault")
 	}
 	if r.Limit == 0 {
 		r.Limit = limit

@@ -6,8 +6,8 @@ import (
 	"github.com/zitadel/zitadel/internal/api/grpc/object/v2"
 	"github.com/zitadel/zitadel/internal/api/grpc/user/v2"
 	"github.com/zitadel/zitadel/internal/command"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
-	org "github.com/zitadel/zitadel/pkg/grpc/org/v2beta"
+	"github.com/zitadel/zitadel/internal/zerrors"
+	"github.com/zitadel/zitadel/pkg/grpc/org/v2"
 )
 
 func (s *Server) AddOrganization(ctx context.Context, request *org.AddOrganizationRequest) (*org.AddOrganizationResponse, error) {
@@ -62,7 +62,7 @@ func addOrganizationRequestAdminToCommand(admin *org.AddOrganizationRequest_Admi
 			Roles: admin.GetRoles(),
 		}, nil
 	default:
-		return nil, caos_errs.ThrowUnimplementedf(nil, "ORGv2-SD2r1", "userType oneOf %T in method AddOrganization not implemented", a)
+		return nil, zerrors.ThrowUnimplementedf(nil, "ORGv2-SD2r1", "userType oneOf %T in method AddOrganization not implemented", a)
 	}
 }
 

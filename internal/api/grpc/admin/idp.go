@@ -30,7 +30,7 @@ func (s *Server) ListIDPs(ctx context.Context, req *admin_pb.ListIDPsRequest) (*
 	}
 	return &admin_pb.ListIDPsResponse{
 		Result:  idp_grpc.IDPViewsToPb(resp.IDPs),
-		Details: object_pb.ToListDetails(resp.Count, resp.Sequence, resp.Timestamp),
+		Details: object_pb.ToListDetails(resp.Count, resp.Sequence, resp.LastRun),
 	}, nil
 }
 
@@ -112,7 +112,7 @@ func (s *Server) RemoveIDP(ctx context.Context, req *admin_pb.RemoveIDPRequest) 
 	}
 	userLinks, err := s.query.IDPUserLinks(ctx, &query.IDPUserLinksSearchQuery{
 		Queries: []query.SearchQuery{idpQuery},
-	}, true)
+	}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +157,7 @@ func (s *Server) GetProviderByID(ctx context.Context, req *admin_pb.GetProviderB
 	if err != nil {
 		return nil, err
 	}
-	idp, err := s.query.IDPTemplateByID(ctx, true, req.Id, false, instanceIDQuery)
+	idp, err := s.query.IDPTemplateByID(ctx, true, req.Id, false, nil, instanceIDQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,7 @@ func (s *Server) ListProviders(ctx context.Context, req *admin_pb.ListProvidersR
 	}
 	return &admin_pb.ListProvidersResponse{
 		Result:  idp_grpc.ProvidersToPb(resp.Templates),
-		Details: object_pb.ToListDetails(resp.Count, resp.Sequence, resp.Timestamp),
+		Details: object_pb.ToListDetails(resp.Count, resp.Sequence, resp.LastRun),
 	}, nil
 }
 
@@ -422,6 +422,37 @@ func (s *Server) UpdateAppleProvider(ctx context.Context, req *admin_pb.UpdateAp
 		return nil, err
 	}
 	return &admin_pb.UpdateAppleProviderResponse{
+		Details: object_pb.DomainToChangeDetailsPb(details),
+	}, nil
+}
+
+func (s *Server) AddSAMLProvider(ctx context.Context, req *admin_pb.AddSAMLProviderRequest) (*admin_pb.AddSAMLProviderResponse, error) {
+	id, details, err := s.command.AddInstanceSAMLProvider(ctx, addSAMLProviderToCommand(req))
+	if err != nil {
+		return nil, err
+	}
+	return &admin_pb.AddSAMLProviderResponse{
+		Id:      id,
+		Details: object_pb.DomainToAddDetailsPb(details),
+	}, nil
+}
+
+func (s *Server) UpdateSAMLProvider(ctx context.Context, req *admin_pb.UpdateSAMLProviderRequest) (*admin_pb.UpdateSAMLProviderResponse, error) {
+	details, err := s.command.UpdateInstanceSAMLProvider(ctx, req.Id, updateSAMLProviderToCommand(req))
+	if err != nil {
+		return nil, err
+	}
+	return &admin_pb.UpdateSAMLProviderResponse{
+		Details: object_pb.DomainToChangeDetailsPb(details),
+	}, nil
+}
+
+func (s *Server) RegenerateSAMLProviderCertificate(ctx context.Context, req *admin_pb.RegenerateSAMLProviderCertificateRequest) (*admin_pb.RegenerateSAMLProviderCertificateResponse, error) {
+	details, err := s.command.RegenerateInstanceSAMLProviderCertificate(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &admin_pb.RegenerateSAMLProviderCertificateResponse{
 		Details: object_pb.DomainToChangeDetailsPb(details),
 	}, nil
 }

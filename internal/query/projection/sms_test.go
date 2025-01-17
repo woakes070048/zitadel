@@ -5,11 +5,10 @@ import (
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestSMSProjection_reduces(t *testing.T) {
@@ -25,10 +24,11 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceSMSTwilioAdded",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigTwilioAddedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioAddedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"id": "id",
 						"sid": "sid",
 						"token": {
@@ -37,19 +37,20 @@ func TestSMSProjection_reduces(t *testing.T) {
 							"keyId": "key-id",
 							"crypted": "Y3J5cHRlZA=="
 						},
-						"senderNumber": "sender-number"
+						"senderNumber": "sender-number",
+						"description": "description",
+						"verifyServiceSid": "verify-service-sid"
 					}`),
-				), instance.SMSConfigTwilioAddedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioAddedEvent]),
 			},
 			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioAdded,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.sms_configs2 (id, aggregate_id, creation_date, change_date, resource_owner, instance_id, state, sequence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+							expectedStmt: "INSERT INTO projections.sms_configs3 (id, aggregate_id, creation_date, change_date, resource_owner, instance_id, state, sequence, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
 							expectedArgs: []interface{}{
 								"id",
 								"agg-id",
@@ -59,10 +60,11 @@ func TestSMSProjection_reduces(t *testing.T) {
 								"instance-id",
 								domain.SMSConfigStateInactive,
 								uint64(15),
+								"description",
 							},
 						},
 						{
-							expectedStmt: "INSERT INTO projections.sms_configs2_twilio (sms_id, instance_id, sid, token, sender_number) VALUES ($1, $2, $3, $4, $5)",
+							expectedStmt: "INSERT INTO projections.sms_configs3_twilio (sms_id, instance_id, sid, token, sender_number, verify_service_sid) VALUES ($1, $2, $3, $4, $5, $6)",
 							expectedArgs: []interface{}{
 								"id",
 								"instance-id",
@@ -74,6 +76,7 @@ func TestSMSProjection_reduces(t *testing.T) {
 									Crypted:    []byte("crypted"),
 								},
 								"sender-number",
+								"verify-service-sid",
 							},
 						},
 					},
@@ -83,37 +86,114 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceSMSConfigTwilioChanged",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigTwilioChangedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"id": "id",
 						"sid": "sid",
-						"senderNumber": "sender-number"
+						"senderNumber": "sender-number",
+						"description": "description",
+						"verifyServiceSid": "verify-service-sid"
 					}`),
-				), instance.SMSConfigTwilioChangedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioChangedEvent]),
 			},
 			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioChanged,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.sms_configs2_twilio SET (sid, sender_number) = ($1, $2) WHERE (sms_id = $3) AND (instance_id = $4)",
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence, description) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
-								"sid",
-								"sender-number",
+								anyArg{},
+								uint64(15),
+								"description",
 								"id",
 								"instance-id",
 							},
 						},
 						{
-							expectedStmt: "UPDATE projections.sms_configs2 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
+							expectedStmt: "UPDATE projections.sms_configs3_twilio SET (sid, sender_number, verify_service_sid) = ($1, $2, $3) WHERE (sms_id = $4) AND (instance_id = $5)",
+							expectedArgs: []interface{}{
+								"sid",
+								"sender-number",
+								"verify-service-sid",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigTwilioChanged, only description",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"description": "description"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioChangedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioChanged,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence, description) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
+								"description",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigTwilioChanged, only sid",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"sid": "sid"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioChangedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioChanged,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
+							expectedArgs: []interface{}{
+								anyArg{},
+								uint64(15),
+								"id",
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3_twilio SET sid = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
+							expectedArgs: []interface{}{
+								"sid",
 								"id",
 								"instance-id",
 							},
@@ -125,10 +205,11 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceSMSConfigTwilioTokenChanged",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigTwilioTokenChangedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioTokenChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"id": "id",
 						"token": {
 							"cryptoType": 0,
@@ -137,17 +218,16 @@ func TestSMSProjection_reduces(t *testing.T) {
 							"crypted": "Y3J5cHRlZA=="
 						}
 					}`),
-				), instance.SMSConfigTwilioTokenChangedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioTokenChangedEvent]),
 			},
 			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioTokenChanged,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.sms_configs2_twilio SET token = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
+							expectedStmt: "UPDATE projections.sms_configs3_twilio SET token = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
 							expectedArgs: []interface{}{
 								&crypto.CryptoValue{
 									CryptoType: crypto.TypeEncryption,
@@ -160,7 +240,7 @@ func TestSMSProjection_reduces(t *testing.T) {
 							},
 						},
 						{
-							expectedStmt: "UPDATE projections.sms_configs2 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -173,25 +253,340 @@ func TestSMSProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name: "instance reduceSMSConfigActivated",
+			name: "instance reduceSMSConfigTwilioChanged, only sid",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigActivatedEventType),
-					instance.AggregateType,
-					[]byte(`{
-						"id": "id"
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"verifyServiceSid": "verify-service-sid"
 					}`),
-				), instance.SMSConfigActivatedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioChangedEvent]),
 			},
-			reduce: (&smsConfigProjection{}).reduceSMSConfigActivated,
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioChanged,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.sms_configs2 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
+							expectedArgs: []interface{}{
+								anyArg{},
+								uint64(15),
+								"id",
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3_twilio SET verify_service_sid = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
+							expectedArgs: []interface{}{
+								"verify-service-sid",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSHTTPAdded",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigHTTPAddedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"description": "description",
+						"endpoint": "endpoint"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigHTTPAddedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigHTTPAdded,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "INSERT INTO projections.sms_configs3 (id, aggregate_id, creation_date, change_date, resource_owner, instance_id, state, sequence, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+							expectedArgs: []interface{}{
+								"id",
+								"agg-id",
+								anyArg{},
+								anyArg{},
+								"ro-id",
+								"instance-id",
+								domain.SMSConfigStateInactive,
+								uint64(15),
+								"description",
+							},
+						},
+						{
+							expectedStmt: "INSERT INTO projections.sms_configs3_http (sms_id, instance_id, endpoint) VALUES ($1, $2, $3)",
+							expectedArgs: []interface{}{
+								"id",
+								"instance-id",
+								"endpoint",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigHTTPChanged",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigHTTPChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"endpoint": "endpoint",
+						"description": "description"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigHTTPChangedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigHTTPChanged,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence, description) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedArgs: []interface{}{
+								anyArg{},
+								uint64(15),
+								"description",
+								"id",
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3_http SET endpoint = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
+							expectedArgs: []interface{}{
+								"endpoint",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigHTTPChanged, only description",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigHTTPChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"description": "description"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigHTTPChangedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigHTTPChanged,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence, description) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedArgs: []interface{}{
+								anyArg{},
+								uint64(15),
+								"description",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		}, {
+			name: "instance reduceSMSConfigHTTPChanged, only endpoint",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigHTTPChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id",
+						"endpoint": "endpoint"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigHTTPChangedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigHTTPChanged,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (change_date, sequence) = ($1, $2) WHERE (id = $3) AND (instance_id = $4)",
+							expectedArgs: []interface{}{
+								anyArg{},
+								uint64(15),
+								"id",
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3_http SET endpoint = $1 WHERE (sms_id = $2) AND (instance_id = $3)",
+							expectedArgs: []interface{}{
+								"endpoint",
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigTwilioActivated",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioActivatedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioActivatedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioActivated,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (NOT (id = $4)) AND (state = $5) AND (instance_id = $6)",
+							expectedArgs: []interface{}{
+								domain.SMSConfigStateInactive,
+								anyArg{},
+								uint64(15),
+								"id",
+								domain.SMSConfigStateActive,
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedArgs: []interface{}{
+								domain.SMSConfigStateActive,
+								anyArg{},
+								uint64(15),
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigTwilioDeactivated",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioDeactivatedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioDeactivatedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioDeactivated,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedArgs: []interface{}{
+								domain.SMSConfigStateInactive,
+								anyArg{},
+								uint64(15),
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigTwilioRemoved",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigTwilioRemovedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigTwilioRemovedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigTwilioRemoved,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "DELETE FROM projections.sms_configs3 WHERE (id = $1) AND (instance_id = $2)",
+							expectedArgs: []interface{}{
+								"id",
+								"instance-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "instance reduceSMSConfigActivated",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigActivatedEventType,
+						instance.AggregateType,
+						[]byte(`{
+						"id": "id"
+					}`),
+					), eventstore.GenericEventMapper[instance.SMSConfigActivatedEvent]),
+			},
+			reduce: (&smsConfigProjection{}).reduceSMSConfigActivated,
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (NOT (id = $4)) AND (state = $5) AND (instance_id = $6)",
+							expectedArgs: []interface{}{
+								domain.SMSConfigStateInactive,
+								anyArg{},
+								uint64(15),
+								"id",
+								domain.SMSConfigStateActive,
+								"instance-id",
+							},
+						},
+						{
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								domain.SMSConfigStateActive,
 								anyArg{},
@@ -207,23 +602,23 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceSMSConfigDeactivated",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigDeactivatedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigDeactivatedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"id": "id"
 					}`),
-				), instance.SMSConfigDeactivatedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigDeactivatedEvent]),
 			},
 			reduce: (&smsConfigProjection{}).reduceSMSConfigDeactivated,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.sms_configs2 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.sms_configs3 SET (state, change_date, sequence) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								domain.SMSConfigStateInactive,
 								anyArg{},
@@ -239,23 +634,23 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceSMSConfigRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.SMSConfigRemovedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.SMSConfigRemovedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"id": "id"
 					}`),
-				), instance.SMSConfigRemovedEventMapper),
+					), eventstore.GenericEventMapper[instance.SMSConfigRemovedEvent]),
 			},
 			reduce: (&smsConfigProjection{}).reduceSMSConfigRemoved,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.sms_configs2 WHERE (id = $1) AND (instance_id = $2)",
+							expectedStmt: "DELETE FROM projections.sms_configs3 WHERE (id = $1) AND (instance_id = $2)",
 							expectedArgs: []interface{}{
 								"id",
 								"instance-id",
@@ -268,21 +663,21 @@ func TestSMSProjection_reduces(t *testing.T) {
 		{
 			name: "instance reduceInstanceRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.InstanceRemovedEventType),
-					instance.AggregateType,
-					nil,
-				), instance.InstanceRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						instance.InstanceRemovedEventType,
+						instance.AggregateType,
+						nil,
+					), instance.InstanceRemovedEventMapper),
 			},
 			reduce: reduceInstanceRemovedHelper(SMSColumnInstanceID),
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.sms_configs2 WHERE (instance_id = $1)",
+							expectedStmt: "DELETE FROM projections.sms_configs3 WHERE (instance_id = $1)",
 							expectedArgs: []interface{}{
 								"agg-id",
 							},
@@ -296,7 +691,7 @@ func TestSMSProjection_reduces(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			event := baseEvent(t)
 			got, err := tt.reduce(event)
-			if _, ok := err.(errors.InvalidArgument); !ok {
+			if ok := zerrors.IsErrorInvalidArgument(err); !ok {
 				t.Errorf("no wrong event mapping: %v, got: %v", err, got)
 			}
 

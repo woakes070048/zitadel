@@ -5,16 +5,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zitadel/logging"
-
 	http_util "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/command/preparation"
-	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	project_repo "github.com/zitadel/zitadel/internal/repository/project"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type addOIDCApp struct {
@@ -34,54 +31,56 @@ type addOIDCApp struct {
 	ClockSkew                   time.Duration
 	AdditionalOrigins           []string
 	SkipSuccessPageForNativeApp bool
+	BackChannelLogoutURI        string
+	LoginVersion                domain.LoginVersion
+	LoginBaseURI                string
 
 	ClientID          string
-	ClientSecret      *crypto.CryptoValue
+	ClientSecret      string
 	ClientSecretPlain string
 }
 
 // AddOIDCAppCommand prepares the commands to add an oidc app. The ClientID will be set during the CreateCommands
-func (c *Commands) AddOIDCAppCommand(app *addOIDCApp, clientSecretAlg crypto.HashAlgorithm) preparation.Validation {
+func (c *Commands) AddOIDCAppCommand(app *addOIDCApp) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if app.ID == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "PROJE-NnavI", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "PROJE-NnavI", "Errors.Invalid.Argument")
 		}
 
 		if app.Name = strings.TrimSpace(app.Name); app.Name == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "PROJE-Fef31", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "PROJE-Fef31", "Errors.Invalid.Argument")
 		}
 
 		if app.ClockSkew > time.Second*5 || app.ClockSkew < 0 {
-			return nil, errors.ThrowInvalidArgument(nil, "V2-PnCMS", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "V2-PnCMS", "Errors.Invalid.Argument")
 		}
 
 		for _, origin := range app.AdditionalOrigins {
-			if !http_util.IsOrigin(origin) {
-				return nil, errors.ThrowInvalidArgument(nil, "V2-DqWPX", "Errors.Invalid.Argument")
+			if !http_util.IsOrigin(strings.TrimSpace(origin)) {
+				return nil, zerrors.ThrowInvalidArgument(nil, "V2-DqWPX", "Errors.Invalid.Argument")
 			}
 		}
 
 		if !domain.ContainsRequiredGrantTypes(app.ResponseTypes, app.GrantTypes) {
-			return nil, errors.ThrowInvalidArgument(nil, "V2-sLpW1", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "V2-sLpW1", "Errors.Invalid.Argument")
 		}
 
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) (_ []eventstore.Command, err error) {
 			project, err := projectWriteModel(ctx, filter, app.Aggregate.ID, app.Aggregate.ResourceOwner)
 			if err != nil || !project.State.Valid() {
-				return nil, errors.ThrowNotFound(err, "PROJE-6swVG", "Errors.Project.NotFound")
+				return nil, zerrors.ThrowNotFound(err, "PROJE-6swVG", "Errors.Project.NotFound")
 			}
 
-			app.ClientID, err = domain.NewClientID(c.idGenerator, project.Name)
+			app.ClientID, err = c.idGenerator.Next()
 			if err != nil {
-				return nil, errors.ThrowInternal(err, "V2-VMSQ1", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "V2-VMSQ1", "Errors.Internal")
 			}
 
 			if app.AuthMethodType == domain.OIDCAuthMethodTypeBasic || app.AuthMethodType == domain.OIDCAuthMethodTypePost {
-				code, err := c.newAppClientSecret(ctx, filter, clientSecretAlg)
+				app.ClientSecret, app.ClientSecretPlain, err = c.newHashedSecret(ctx, filter)
 				if err != nil {
 					return nil, err
 				}
-				app.ClientSecret, app.ClientSecretPlain = code.Crypted, code.Plain
 			}
 
 			return []eventstore.Command{
@@ -98,54 +97,60 @@ func (c *Commands) AddOIDCAppCommand(app *addOIDCApp, clientSecretAlg crypto.Has
 					app.ID,
 					app.ClientID,
 					app.ClientSecret,
-					app.RedirectUris,
+					trimStringSliceWhiteSpaces(app.RedirectUris),
 					app.ResponseTypes,
 					app.GrantTypes,
 					app.ApplicationType,
 					app.AuthMethodType,
-					app.PostLogoutRedirectUris,
+					trimStringSliceWhiteSpaces(app.PostLogoutRedirectUris),
 					app.DevMode,
 					app.AccessTokenType,
 					app.AccessTokenRoleAssertion,
 					app.IDTokenRoleAssertion,
 					app.IDTokenUserinfoAssertion,
 					app.ClockSkew,
-					app.AdditionalOrigins,
+					trimStringSliceWhiteSpaces(app.AdditionalOrigins),
 					app.SkipSuccessPageForNativeApp,
+					app.BackChannelLogoutURI,
+					app.LoginVersion,
+					app.LoginBaseURI,
 				),
 			}, nil
 		}, nil
 	}
 }
 
-func (c *Commands) AddOIDCApplicationWithID(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner, appID string, appSecretGenerator crypto.Generator) (_ *domain.OIDCApp, err error) {
+func (c *Commands) AddOIDCApplicationWithID(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner, appID string) (_ *domain.OIDCApp, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	existingApp, err := c.getOIDCAppWriteModel(ctx, oidcApp.AggregateID, appID, resourceOwner)
 	if err != nil {
 		return nil, err
 	}
 	if existingApp.State != domain.AppStateUnspecified {
-		return nil, errors.ThrowPreconditionFailed(nil, "PROJECT-lxowmp", "Errors.Project.App.AlreadyExisting")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "PROJECT-lxowmp", "Errors.Project.App.AlreadyExisting")
 	}
 
-	project, err := c.getProjectByID(ctx, oidcApp.AggregateID, resourceOwner)
+	_, err = c.getProjectByID(ctx, oidcApp.AggregateID, resourceOwner)
 	if err != nil {
-		return nil, errors.ThrowPreconditionFailed(err, "PROJECT-3m9s2", "Errors.Project.NotFound")
+		return nil, zerrors.ThrowPreconditionFailed(err, "PROJECT-3m9s2", "Errors.Project.NotFound")
 	}
 
-	return c.addOIDCApplicationWithID(ctx, oidcApp, resourceOwner, project, appID, appSecretGenerator)
+	return c.addOIDCApplicationWithID(ctx, oidcApp, resourceOwner, appID)
 }
 
-func (c *Commands) AddOIDCApplication(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner string, appSecretGenerator crypto.Generator) (_ *domain.OIDCApp, err error) {
+func (c *Commands) AddOIDCApplication(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner string) (_ *domain.OIDCApp, err error) {
 	if oidcApp == nil || oidcApp.AggregateID == "" {
-		return nil, errors.ThrowInvalidArgument(nil, "PROJECT-34Fm0", "Errors.Project.App.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "PROJECT-34Fm0", "Errors.Project.App.Invalid")
 	}
-	project, err := c.getProjectByID(ctx, oidcApp.AggregateID, resourceOwner)
+	_, err = c.getProjectByID(ctx, oidcApp.AggregateID, resourceOwner)
 	if err != nil {
-		return nil, errors.ThrowPreconditionFailed(err, "PROJECT-3m9ss", "Errors.Project.NotFound")
+		return nil, zerrors.ThrowPreconditionFailed(err, "PROJECT-3m9ss", "Errors.Project.NotFound")
 	}
 
 	if oidcApp.AppName == "" || !oidcApp.IsValid() {
-		return nil, errors.ThrowInvalidArgument(nil, "PROJECT-1n8df", "Errors.Project.App.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "PROJECT-1n8df", "Errors.Project.App.Invalid")
 	}
 
 	appID, err := c.idGenerator.Next()
@@ -153,10 +158,12 @@ func (c *Commands) AddOIDCApplication(ctx context.Context, oidcApp *domain.OIDCA
 		return nil, err
 	}
 
-	return c.addOIDCApplicationWithID(ctx, oidcApp, resourceOwner, project, appID, appSecretGenerator)
+	return c.addOIDCApplicationWithID(ctx, oidcApp, resourceOwner, appID)
 }
 
-func (c *Commands) addOIDCApplicationWithID(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner string, project *domain.Project, appID string, appSecretGenerator crypto.Generator) (_ *domain.OIDCApp, err error) {
+func (c *Commands) addOIDCApplicationWithID(ctx context.Context, oidcApp *domain.OIDCApp, resourceOwner string, appID string) (_ *domain.OIDCApp, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 
 	addedApplication := NewOIDCApplicationWriteModel(oidcApp.AggregateID, resourceOwner)
 	projectAgg := ProjectAggregateFromWriteModel(&addedApplication.WriteModel)
@@ -167,12 +174,14 @@ func (c *Commands) addOIDCApplicationWithID(ctx context.Context, oidcApp *domain
 		project_repo.NewApplicationAddedEvent(ctx, projectAgg, oidcApp.AppID, oidcApp.AppName),
 	}
 
-	var stringPw string
-	err = domain.SetNewClientID(oidcApp, c.idGenerator, project)
+	var plain string
+	err = domain.SetNewClientID(oidcApp, c.idGenerator)
 	if err != nil {
 		return nil, err
 	}
-	stringPw, err = domain.SetNewClientSecretIfNeeded(oidcApp, appSecretGenerator)
+	plain, err = domain.SetNewClientSecretIfNeeded(oidcApp, func() (string, string, error) {
+		return c.newHashedSecret(ctx, c.eventstore.Filter) //nolint:staticcheck
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -181,41 +190,49 @@ func (c *Commands) addOIDCApplicationWithID(ctx context.Context, oidcApp *domain
 		oidcApp.OIDCVersion,
 		oidcApp.AppID,
 		oidcApp.ClientID,
-		oidcApp.ClientSecret,
-		oidcApp.RedirectUris,
+		oidcApp.EncodedHash,
+		trimStringSliceWhiteSpaces(oidcApp.RedirectUris),
 		oidcApp.ResponseTypes,
 		oidcApp.GrantTypes,
 		oidcApp.ApplicationType,
 		oidcApp.AuthMethodType,
-		oidcApp.PostLogoutRedirectUris,
+		trimStringSliceWhiteSpaces(oidcApp.PostLogoutRedirectUris),
 		oidcApp.DevMode,
 		oidcApp.AccessTokenType,
 		oidcApp.AccessTokenRoleAssertion,
 		oidcApp.IDTokenRoleAssertion,
 		oidcApp.IDTokenUserinfoAssertion,
 		oidcApp.ClockSkew,
-		oidcApp.AdditionalOrigins,
+		trimStringSliceWhiteSpaces(oidcApp.AdditionalOrigins),
 		oidcApp.SkipNativeAppSuccessPage,
+		strings.TrimSpace(oidcApp.BackChannelLogoutURI),
+		oidcApp.LoginVersion,
+		strings.TrimSpace(oidcApp.LoginBaseURI),
 	))
 
 	addedApplication.AppID = oidcApp.AppID
+	postCommit, err := c.applicationCreatedMilestone(ctx, &events)
+	if err != nil {
+		return nil, err
+	}
 	pushedEvents, err := c.eventstore.Push(ctx, events...)
 	if err != nil {
 		return nil, err
 	}
+	postCommit(ctx)
 	err = AppendAndReduce(addedApplication, pushedEvents...)
 	if err != nil {
 		return nil, err
 	}
 	result := oidcWriteModelToOIDCConfig(addedApplication)
-	result.ClientSecretString = stringPw
+	result.ClientSecretString = plain
 	result.FillCompliance()
 	return result, nil
 }
 
 func (c *Commands) ChangeOIDCApplication(ctx context.Context, oidc *domain.OIDCApp, resourceOwner string) (*domain.OIDCApp, error) {
 	if !oidc.IsValid() || oidc.AppID == "" || oidc.AggregateID == "" {
-		return nil, errors.ThrowInvalidArgument(nil, "COMMAND-5m9fs", "Errors.Project.App.OIDCConfigInvalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-5m9fs", "Errors.Project.App.OIDCConfigInvalid")
 	}
 
 	existingOIDC, err := c.getOIDCAppWriteModel(ctx, oidc.AggregateID, oidc.AppID, resourceOwner)
@@ -223,18 +240,18 @@ func (c *Commands) ChangeOIDCApplication(ctx context.Context, oidc *domain.OIDCA
 		return nil, err
 	}
 	if existingOIDC.State == domain.AppStateUnspecified || existingOIDC.State == domain.AppStateRemoved {
-		return nil, errors.ThrowNotFound(nil, "COMMAND-2n8uU", "Errors.Project.App.NotExisting")
+		return nil, zerrors.ThrowNotFound(nil, "COMMAND-2n8uU", "Errors.Project.App.NotExisting")
 	}
 	if !existingOIDC.IsOIDC() {
-		return nil, errors.ThrowInvalidArgument(nil, "COMMAND-GBr34", "Errors.Project.App.IsNotOIDC")
+		return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-GBr34", "Errors.Project.App.IsNotOIDC")
 	}
 	projectAgg := ProjectAggregateFromWriteModel(&existingOIDC.WriteModel)
 	changedEvent, hasChanged, err := existingOIDC.NewChangedEvent(
 		ctx,
 		projectAgg,
 		oidc.AppID,
-		oidc.RedirectUris,
-		oidc.PostLogoutRedirectUris,
+		trimStringSliceWhiteSpaces(oidc.RedirectUris),
+		trimStringSliceWhiteSpaces(oidc.PostLogoutRedirectUris),
 		oidc.ResponseTypes,
 		oidc.GrantTypes,
 		oidc.ApplicationType,
@@ -246,14 +263,17 @@ func (c *Commands) ChangeOIDCApplication(ctx context.Context, oidc *domain.OIDCA
 		oidc.IDTokenRoleAssertion,
 		oidc.IDTokenUserinfoAssertion,
 		oidc.ClockSkew,
-		oidc.AdditionalOrigins,
+		trimStringSliceWhiteSpaces(oidc.AdditionalOrigins),
 		oidc.SkipNativeAppSuccessPage,
+		strings.TrimSpace(oidc.BackChannelLogoutURI),
+		oidc.LoginVersion,
+		strings.TrimSpace(oidc.LoginBaseURI),
 	)
 	if err != nil {
 		return nil, err
 	}
 	if !hasChanged {
-		return nil, errors.ThrowPreconditionFailed(nil, "COMMAND-1m88i", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "COMMAND-1m88i", "Errors.NoChangesFound")
 	}
 
 	pushedEvents, err := c.eventstore.Push(ctx, changedEvent)
@@ -270,9 +290,9 @@ func (c *Commands) ChangeOIDCApplication(ctx context.Context, oidc *domain.OIDCA
 	return result, nil
 }
 
-func (c *Commands) ChangeOIDCApplicationSecret(ctx context.Context, projectID, appID, resourceOwner string, appSecretGenerator crypto.Generator) (*domain.OIDCApp, error) {
+func (c *Commands) ChangeOIDCApplicationSecret(ctx context.Context, projectID, appID, resourceOwner string) (*domain.OIDCApp, error) {
 	if projectID == "" || appID == "" {
-		return nil, errors.ThrowInvalidArgument(nil, "COMMAND-99i83", "Errors.IDMissing")
+		return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-99i83", "Errors.IDMissing")
 	}
 
 	existingOIDC, err := c.getOIDCAppWriteModel(ctx, projectID, appID, resourceOwner)
@@ -280,19 +300,19 @@ func (c *Commands) ChangeOIDCApplicationSecret(ctx context.Context, projectID, a
 		return nil, err
 	}
 	if existingOIDC.State == domain.AppStateUnspecified || existingOIDC.State == domain.AppStateRemoved {
-		return nil, errors.ThrowNotFound(nil, "COMMAND-2g66f", "Errors.Project.App.NotExisting")
+		return nil, zerrors.ThrowNotFound(nil, "COMMAND-2g66f", "Errors.Project.App.NotExisting")
 	}
 	if !existingOIDC.IsOIDC() {
-		return nil, errors.ThrowInvalidArgument(nil, "COMMAND-Ghrh3", "Errors.Project.App.IsNotOIDC")
+		return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-Ghrh3", "Errors.Project.App.IsNotOIDC")
 	}
-	cryptoSecret, stringPW, err := domain.NewClientSecret(appSecretGenerator)
+	encodedHash, plain, err := c.newHashedSecret(ctx, c.eventstore.Filter) //nolint:staticcheck
 	if err != nil {
 		return nil, err
 	}
 
 	projectAgg := ProjectAggregateFromWriteModel(&existingOIDC.WriteModel)
 
-	pushedEvents, err := c.eventstore.Push(ctx, project_repo.NewOIDCConfigSecretChangedEvent(ctx, projectAgg, appID, cryptoSecret))
+	pushedEvents, err := c.eventstore.Push(ctx, project_repo.NewOIDCConfigSecretChangedEvent(ctx, projectAgg, appID, encodedHash))
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +322,7 @@ func (c *Commands) ChangeOIDCApplicationSecret(ctx context.Context, projectID, a
 	}
 
 	result := oidcWriteModelToOIDCConfig(existingOIDC)
-	result.ClientSecretString = stringPW
+	result.ClientSecretString = plain
 	return result, err
 }
 
@@ -315,31 +335,39 @@ func (c *Commands) VerifyOIDCClientSecret(ctx context.Context, projectID, appID,
 		return err
 	}
 	if !app.State.Exists() {
-		return errors.ThrowPreconditionFailed(nil, "COMMAND-D6hba", "Errors.Project.App.NotExisting")
+		return zerrors.ThrowPreconditionFailed(nil, "COMMAND-D8hba", "Errors.Project.App.NotExisting")
 	}
 	if !app.IsOIDC() {
-		return errors.ThrowInvalidArgument(nil, "COMMAND-BHgn2", "Errors.Project.App.IsNotOIDC")
+		return zerrors.ThrowInvalidArgument(nil, "COMMAND-BHgn2", "Errors.Project.App.IsNotOIDC")
 	}
-	if app.ClientSecret == nil {
-		return errors.ThrowPreconditionFailed(nil, "COMMAND-D6hba", "Errors.Project.App.OIDCConfigInvalid")
+	if app.HashedSecret == "" {
+		return zerrors.ThrowPreconditionFailed(nil, "COMMAND-D6hba", "Errors.Project.App.OIDCConfigInvalid")
 	}
 
 	projectAgg := ProjectAggregateFromWriteModel(&app.WriteModel)
-	ctx, spanPasswordComparison := tracing.NewNamedSpan(ctx, "crypto.CompareHash")
-	err = crypto.CompareHash(app.ClientSecret, []byte(secret), c.codeAlg)
+	ctx, spanPasswordComparison := tracing.NewNamedSpan(ctx, "passwap.Verify")
+	updated, err := c.secretHasher.Verify(app.HashedSecret, secret)
 	spanPasswordComparison.EndWithError(err)
-	if err == nil {
-		_, err = c.eventstore.Push(ctx, project_repo.NewOIDCConfigSecretCheckSucceededEvent(ctx, projectAgg, app.AppID))
-		return err
+	if err != nil {
+		return zerrors.ThrowInvalidArgument(err, "COMMAND-Bz542", "Errors.Project.App.ClientSecretInvalid")
 	}
-	_, err = c.eventstore.Push(ctx, project_repo.NewOIDCConfigSecretCheckFailedEvent(ctx, projectAgg, app.AppID))
-	logging.OnError(err).Error("could not push event OIDCClientSecretCheckFailed")
-	return errors.ThrowInvalidArgument(nil, "COMMAND-Bz542", "Errors.Project.App.ClientSecretInvalid")
+	if updated != "" {
+		c.oidcUpdateSecret(ctx, projectAgg, appID, updated)
+	}
+	return nil
 }
 
-func (c *Commands) getOIDCAppWriteModel(ctx context.Context, projectID, appID, resourceOwner string) (*OIDCApplicationWriteModel, error) {
+func (c *Commands) OIDCUpdateSecret(ctx context.Context, appID, projectID, resourceOwner, updated string) {
+	agg := project_repo.NewAggregate(projectID, resourceOwner)
+	c.oidcUpdateSecret(ctx, &agg.Aggregate, appID, updated)
+}
+
+func (c *Commands) getOIDCAppWriteModel(ctx context.Context, projectID, appID, resourceOwner string) (_ *OIDCApplicationWriteModel, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	appWriteModel := NewOIDCApplicationWriteModelWithAppID(projectID, appID, resourceOwner)
-	err := c.eventstore.FilterToQueryReducer(ctx, appWriteModel)
+	err = c.eventstore.FilterToQueryReducer(ctx, appWriteModel)
 	if err != nil {
 		return nil, err
 	}
@@ -358,4 +386,15 @@ func getOIDCAppWriteModel(ctx context.Context, filter preparation.FilterToQueryR
 	appWriteModel.AppendEvents(events...)
 	err = appWriteModel.Reduce()
 	return appWriteModel, err
+}
+
+func trimStringSliceWhiteSpaces(slice []string) []string {
+	for i, s := range slice {
+		slice[i] = strings.TrimSpace(s)
+	}
+	return slice
+}
+
+func (c *Commands) oidcUpdateSecret(ctx context.Context, agg *eventstore.Aggregate, appID, updated string) {
+	c.asyncPush(ctx, project_repo.NewOIDCConfigSecretHashUpdatedEvent(ctx, agg, appID, updated))
 }

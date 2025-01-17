@@ -3,16 +3,16 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/database"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/repository/quota"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -70,7 +70,7 @@ func (q *Queries) GetQuota(ctx context.Context, instanceID string, unit quota.Un
 		},
 	).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-XmYn9", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-XmYn9", "Errors.Query.SQLStatement")
 	}
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
 		qu, err = scan(row)
@@ -92,16 +92,16 @@ func prepareQuotaQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilde
 			From(quotasTable.identifier()).
 			PlaceholderFormat(sq.Dollar), func(row *sql.Row) (*Quota, error) {
 			q := new(Quota)
-			var interval database.Duration
+			var interval database.NullDuration
 			var now time.Time
 			err := row.Scan(&q.ID, &q.From, &interval, &q.Amount, &q.Limit, &now)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-rDTM6", "Errors.Quota.NotExisting")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-rDTM6", "Errors.Quota.NotExisting")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-LqySK", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-LqySK", "Errors.Internal")
 			}
-			q.ResetInterval = time.Duration(interval)
+			q.ResetInterval = interval.Duration
 			q.CurrentPeriodStart = pushPeriodStart(q.From, q.ResetInterval, now)
 			return q, nil
 		}

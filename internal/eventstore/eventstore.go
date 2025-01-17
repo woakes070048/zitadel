@@ -2,194 +2,211 @@ package eventstore
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"reflect"
+	"errors"
 	"sort"
-	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/zitadel/logging"
+
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/database"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 // Eventstore abstracts all functions needed to store valid events
 // and filters the stored events
 type Eventstore struct {
-	repo              repository.Repository
-	interceptorMutex  sync.Mutex
+	PushTimeout time.Duration
+	maxRetries  int
+
+	pusher   Pusher
+	querier  Querier
+	searcher Searcher
+}
+
+var (
 	eventInterceptors map[EventType]eventTypeInterceptors
 	eventTypes        []string
 	aggregateTypes    []string
-	PushTimeout       time.Duration
+	eventTypeMapping  = map[EventType]AggregateType{}
+)
 
-	instancesMu        sync.Mutex
-	instances          []string
-	lastInstancesQuery time.Time
+// RegisterFilterEventMapper registers a function for mapping an eventstore event to an event
+func RegisterFilterEventMapper(aggregateType AggregateType, eventType EventType, mapper func(Event) (Event, error)) {
+	if mapper == nil || eventType == "" {
+		return
+	}
+
+	appendEventType(eventType)
+	appendAggregateType(aggregateType)
+
+	if eventInterceptors == nil {
+		eventInterceptors = make(map[EventType]eventTypeInterceptors)
+	}
+
+	interceptor := eventInterceptors[eventType]
+	interceptor.eventMapper = mapper
+	eventInterceptors[eventType] = interceptor
+	eventTypeMapping[eventType] = aggregateType
 }
 
 type eventTypeInterceptors struct {
-	eventMapper func(*repository.Event) (Event, error)
+	eventMapper func(Event) (Event, error)
 }
 
 func NewEventstore(config *Config) *Eventstore {
 	return &Eventstore{
-		repo:              config.repo,
-		eventInterceptors: map[EventType]eventTypeInterceptors{},
-		interceptorMutex:  sync.Mutex{},
-		PushTimeout:       config.PushTimeout,
+		PushTimeout: config.PushTimeout,
+		maxRetries:  int(config.MaxRetries),
+
+		pusher:   config.Pusher,
+		querier:  config.Querier,
+		searcher: config.Searcher,
 	}
 }
 
 // Health checks if the eventstore can properly work
 // It checks if the repository can serve load
 func (es *Eventstore) Health(ctx context.Context) error {
-	return es.repo.Health(ctx)
+	if err := es.pusher.Health(ctx); err != nil {
+		return err
+	}
+	return es.querier.Health(ctx)
 }
 
 // Push pushes the events in a single transaction
 // an event needs at least an aggregate
 func (es *Eventstore) Push(ctx context.Context, cmds ...Command) ([]Event, error) {
-	events, constraints, err := commandsToRepository(authz.GetInstance(ctx).InstanceID(), cmds)
-	if err != nil {
-		return nil, err
-	}
+	return es.PushWithClient(ctx, nil, cmds...)
+}
 
+// PushWithClient pushes the events in a single transaction using the provided database client
+// an event needs at least an aggregate
+func (es *Eventstore) PushWithClient(ctx context.Context, client database.ContextQueryExecuter, cmds ...Command) ([]Event, error) {
 	if es.PushTimeout > 0 {
 		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, es.PushTimeout)
 		defer cancel()
 	}
+	var (
+		events []Event
+		err    error
+	)
 
-	err = es.repo.Push(ctx, events, constraints...)
+	// Retry when there is a collision of the sequence as part of the primary key.
+	// "duplicate key value violates unique constraint \"events2_pkey\" (SQLSTATE 23505)"
+	// https://github.com/zitadel/zitadel/issues/7202
+retry:
+	for i := 0; i <= es.maxRetries; i++ {
+		events, err = es.pusher.Push(ctx, client, cmds...)
+		// if there is a transaction passed the calling function needs to retry
+		if _, ok := client.(database.Tx); ok {
+			break retry
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			break retry
+		}
+		if pgErr.ConstraintName == "events2_pkey" && pgErr.SQLState() == "23505" {
+			logging.WithError(err).Info("eventstore push retry")
+			continue
+		}
+		if pgErr.SQLState() == "CR000" || pgErr.SQLState() == "40001" {
+			logging.WithError(err).Info("eventstore push retry")
+			continue
+		}
+		break retry
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	eventReaders, err := es.mapEvents(events)
+	mappedEvents, err := es.mapEvents(events)
 	if err != nil {
-		return nil, err
+		return mappedEvents, err
 	}
-
-	go notify(eventReaders)
-	return eventReaders, nil
+	es.notify(mappedEvents)
+	return mappedEvents, nil
 }
 
-func (es *Eventstore) NewInstance(ctx context.Context, instanceID string) error {
-	err := es.repo.CreateInstance(ctx, instanceID)
-	if err != nil {
-		return err
-	}
-
-	es.instancesMu.Lock()
-	es.instances = append(es.instances, instanceID)
-	es.instancesMu.Unlock()
-
-	return nil
+func AggregateTypeFromEventType(typ EventType) AggregateType {
+	return eventTypeMapping[typ]
 }
 
 func (es *Eventstore) EventTypes() []string {
-	return es.eventTypes
+	return eventTypes
 }
 
 func (es *Eventstore) AggregateTypes() []string {
-	return es.aggregateTypes
+	return aggregateTypes
 }
 
-func commandsToRepository(instanceID string, cmds []Command) (events []*repository.Event, constraints []*repository.UniqueConstraint, err error) {
-	events = make([]*repository.Event, len(cmds))
-	for i, cmd := range cmds {
-		data, err := EventData(cmd)
-		if err != nil {
-			return nil, nil, err
-		}
-		if cmd.Aggregate().ID == "" {
-			return nil, nil, errors.ThrowInvalidArgument(nil, "V2-Afdfe", "aggregate id must not be empty")
-		}
-		if cmd.Aggregate().Type == "" {
-			return nil, nil, errors.ThrowInvalidArgument(nil, "V2-Dfg32", "aggregate type must not be empty")
-		}
-		if cmd.Type() == "" {
-			return nil, nil, errors.ThrowInvalidArgument(nil, "V2-Drg34", "event type must not be empty")
-		}
-		if cmd.Aggregate().Version == "" {
-			return nil, nil, errors.ThrowInvalidArgument(nil, "V2-Dgfg4", "aggregate version must not be empty")
-		}
-		events[i] = &repository.Event{
-			AggregateID:   cmd.Aggregate().ID,
-			AggregateType: repository.AggregateType(cmd.Aggregate().Type),
-			ResourceOwner: sql.NullString{String: cmd.Aggregate().ResourceOwner, Valid: cmd.Aggregate().ResourceOwner != ""},
-			InstanceID:    instanceID,
-			EditorService: cmd.EditorService(),
-			EditorUser:    cmd.EditorUser(),
-			Type:          repository.EventType(cmd.Type()),
-			Version:       repository.Version(cmd.Aggregate().Version),
-			Data:          data,
-		}
-		if len(cmd.UniqueConstraints()) > 0 {
-			constraints = append(constraints, uniqueConstraintsToRepository(instanceID, cmd.UniqueConstraints())...)
-		}
-	}
-
-	return events, constraints, nil
+// FillFields implements the [Searcher] interface
+func (es *Eventstore) FillFields(ctx context.Context, events ...FillFieldsEvent) error {
+	return es.searcher.FillFields(ctx, events...)
 }
 
-func uniqueConstraintsToRepository(instanceID string, constraints []*EventUniqueConstraint) (uniqueConstraints []*repository.UniqueConstraint) {
-	uniqueConstraints = make([]*repository.UniqueConstraint, len(constraints))
-	for i, constraint := range constraints {
-		var id string
-		if !constraint.IsGlobal {
-			id = instanceID
-		}
-		uniqueConstraints[i] = &repository.UniqueConstraint{
-			UniqueType:   constraint.UniqueType,
-			UniqueField:  constraint.UniqueField,
-			InstanceID:   id,
-			Action:       uniqueConstraintActionToRepository(constraint.Action),
-			ErrorMessage: constraint.ErrorMessage,
-		}
+// Search implements the [Searcher] interface
+func (es *Eventstore) Search(ctx context.Context, conditions ...map[FieldType]any) ([]*SearchResult, error) {
+	if len(conditions) == 0 {
+		return nil, zerrors.ThrowInvalidArgument(nil, "V3-5Xbr1", "no search conditions")
 	}
-	return uniqueConstraints
+
+	return es.searcher.Search(ctx, conditions...)
 }
 
 // Filter filters the stored events based on the searchQuery
 // and maps the events to the defined event structs
-func (es *Eventstore) Filter(ctx context.Context, queryFactory *SearchQueryBuilder) ([]Event, error) {
-	query, err := queryFactory.build(authz.GetInstance(ctx).InstanceID())
+//
+// Deprecated: Use [FilterToQueryReducer] instead to avoid allocations.
+func (es *Eventstore) Filter(ctx context.Context, searchQuery *SearchQueryBuilder) ([]Event, error) {
+	events := make([]Event, 0, searchQuery.GetLimit())
+	searchQuery.ensureInstanceID(ctx)
+	err := es.querier.FilterToReducer(ctx, searchQuery, func(event Event) error {
+		event, err := es.mapEvent(event)
+		if err != nil {
+			return err
+		}
+		events = append(events, event)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	events, err := es.repo.Filter(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	return es.mapEvents(events)
+	return events, nil
 }
 
-func (es *Eventstore) mapEvents(events []*repository.Event) (mappedEvents []Event, err error) {
+func (es *Eventstore) mapEvents(events []Event) (mappedEvents []Event, err error) {
 	mappedEvents = make([]Event, len(events))
-
-	es.interceptorMutex.Lock()
-	defer es.interceptorMutex.Unlock()
-
 	for i, event := range events {
-		interceptors, ok := es.eventInterceptors[EventType(event.Type)]
-		if !ok || interceptors.eventMapper == nil {
-			mappedEvents[i] = BaseEventFromRepo(event)
-			//TODO: return error if unable to map event
-			continue
-			// return nil, errors.ThrowPreconditionFailed(nil, "V2-usujB", "event mapper not defined")
-		}
-		mappedEvents[i], err = interceptors.eventMapper(event)
+		mappedEvents[i], err = es.mapEventLocked(event)
 		if err != nil {
 			return nil, err
 		}
 	}
-
 	return mappedEvents, nil
 }
+
+func (es *Eventstore) mapEvent(event Event) (Event, error) {
+	return es.mapEventLocked(event)
+}
+
+func (es *Eventstore) mapEventLocked(event Event) (Event, error) {
+	interceptors, ok := eventInterceptors[event.Type()]
+	if !ok || interceptors.eventMapper == nil {
+		return BaseEventFromRepo(event), nil
+	}
+	return interceptors.eventMapper(event)
+}
+
+// TODO: refactor so we can change to the following interface:
+/*
+type reducer interface {
+	// Reduce applies an event on the object.
+	Reduce(Event) error
+}
+*/
 
 type reducer interface {
 	//Reduce handles the events of the internal events list
@@ -201,49 +218,32 @@ type reducer interface {
 
 // FilterToReducer filters the events based on the search query, appends all events to the reducer and calls it's reduce function
 func (es *Eventstore) FilterToReducer(ctx context.Context, searchQuery *SearchQueryBuilder, r reducer) error {
-	events, err := es.Filter(ctx, searchQuery)
-	if err != nil {
-		return err
-	}
-
-	r.AppendEvents(events...)
-
-	return r.Reduce()
+	searchQuery.ensureInstanceID(ctx)
+	return es.querier.FilterToReducer(ctx, searchQuery, func(event Event) error {
+		event, err := es.mapEvent(event)
+		if err != nil {
+			return err
+		}
+		r.AppendEvents(event)
+		return r.Reduce()
+	})
 }
 
 // LatestSequence filters the latest sequence for the given search query
-func (es *Eventstore) LatestSequence(ctx context.Context, queryFactory *SearchQueryBuilder) (uint64, error) {
-	query, err := queryFactory.build(authz.GetInstance(ctx).InstanceID())
-	if err != nil {
-		return 0, err
-	}
-	return es.repo.LatestSequence(ctx, query)
+func (es *Eventstore) LatestSequence(ctx context.Context, queryFactory *SearchQueryBuilder) (float64, error) {
+	queryFactory.InstanceID(authz.GetInstance(ctx).InstanceID())
+
+	return es.querier.LatestSequence(ctx, queryFactory)
 }
 
-// InstanceIDs returns the instance ids found by the search query
-// forceDBCall forces to query the database, the instance ids are not cached
-func (es *Eventstore) InstanceIDs(ctx context.Context, maxAge time.Duration, forceDBCall bool, queryFactory *SearchQueryBuilder) ([]string, error) {
-	es.instancesMu.Lock()
-	defer es.instancesMu.Unlock()
+// InstanceIDs returns the distinct instance ids found by the search query
+// Warning: this function can have high impact on performance, only use this function during setup
+func (es *Eventstore) InstanceIDs(ctx context.Context, queryFactory *SearchQueryBuilder) ([]string, error) {
+	return es.querier.InstanceIDs(ctx, queryFactory)
+}
 
-	if !forceDBCall && time.Since(es.lastInstancesQuery) <= maxAge {
-		return es.instances, nil
-	}
-
-	query, err := queryFactory.build(authz.GetInstance(ctx).InstanceID())
-	if err != nil {
-		return nil, err
-	}
-	instances, err := es.repo.InstanceIDs(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if !forceDBCall {
-		es.instances = instances
-		es.lastInstancesQuery = time.Now()
-	}
-
-	return instances, nil
+func (es *Eventstore) Client() *database.DB {
+	return es.querier.Client()
 }
 
 type QueryReducer interface {
@@ -255,103 +255,61 @@ type QueryReducer interface {
 // FilterToQueryReducer filters the events based on the search query of the query function,
 // appends all events to the reducer and calls it's reduce function
 func (es *Eventstore) FilterToQueryReducer(ctx context.Context, r QueryReducer) error {
-	events, err := es.Filter(ctx, r.Query())
-	if err != nil {
-		return err
-	}
-	r.AppendEvents(events...)
-
-	return r.Reduce()
+	return es.FilterToReducer(ctx, r.Query(), r)
 }
 
-// RegisterFilterEventMapper registers a function for mapping an eventstore event to an event
-func (es *Eventstore) RegisterFilterEventMapper(aggregateType AggregateType, eventType EventType, mapper func(*repository.Event) (Event, error)) *Eventstore {
-	if mapper == nil || eventType == "" {
-		return es
-	}
-	es.interceptorMutex.Lock()
-	defer es.interceptorMutex.Unlock()
+type Reducer func(event Event) error
 
-	es.appendEventType(eventType)
-	es.appendAggregateType(aggregateType)
-
-	interceptor := es.eventInterceptors[eventType]
-	interceptor.eventMapper = mapper
-	es.eventInterceptors[eventType] = interceptor
-
-	return es
+type Querier interface {
+	// Health checks if the connection to the storage is available
+	Health(ctx context.Context) error
+	// FilterToReducer calls r for every event returned from the storage
+	FilterToReducer(ctx context.Context, searchQuery *SearchQueryBuilder, r Reducer) error
+	// LatestSequence returns the latest sequence found by the search query
+	LatestSequence(ctx context.Context, queryFactory *SearchQueryBuilder) (float64, error)
+	// InstanceIDs returns the instance ids found by the search query
+	InstanceIDs(ctx context.Context, queryFactory *SearchQueryBuilder) ([]string, error)
+	// Client returns the underlying database connection
+	Client() *database.DB
 }
 
-func (es *Eventstore) appendEventType(typ EventType) {
-	i := sort.SearchStrings(es.eventTypes, string(typ))
-	if i < len(es.eventTypes) && es.eventTypes[i] == string(typ) {
-		return
-	}
-	es.eventTypes = append(es.eventTypes[:i], append([]string{string(typ)}, es.eventTypes[i:]...)...)
+type Pusher interface {
+	// Health checks if the connection to the storage is available
+	Health(ctx context.Context) error
+	// Push stores the actions
+	Push(ctx context.Context, client database.ContextQueryExecuter, commands ...Command) (_ []Event, err error)
+	// Client returns the underlying database connection
+	Client() *database.DB
 }
 
-func (es *Eventstore) appendAggregateType(typ AggregateType) {
-	i := sort.SearchStrings(es.aggregateTypes, string(typ))
-	if len(es.aggregateTypes) > i && es.aggregateTypes[i] == string(typ) {
-		return
-	}
-	es.aggregateTypes = append(es.aggregateTypes[:i], append([]string{string(typ)}, es.aggregateTypes[i:]...)...)
-}
-
-func EventData(event Command) ([]byte, error) {
-	switch data := event.Data().(type) {
-	case nil:
-		return nil, nil
-	case []byte:
-		if json.Valid(data) {
-			return data, nil
-		}
-		return nil, errors.ThrowInvalidArgument(nil, "V2-6SbbS", "data bytes are not json")
-	}
-	dataType := reflect.TypeOf(event.Data())
-	if dataType.Kind() == reflect.Ptr {
-		dataType = dataType.Elem()
-	}
-	if dataType.Kind() == reflect.Struct {
-		dataBytes, err := json.Marshal(event.Data())
-		if err != nil {
-			return nil, errors.ThrowInvalidArgument(err, "V2-xG87M", "could  not marshal data")
-		}
-		return dataBytes, nil
-	}
-	return nil, errors.ThrowInvalidArgument(nil, "V2-91NRm", "wrong type of event data")
-}
-
-func uniqueConstraintActionToRepository(action UniqueConstraintAction) repository.UniqueConstraintAction {
-	switch action {
-	case UniqueConstraintAdd:
-		return repository.UniqueConstraintAdd
-	case UniqueConstraintRemove:
-		return repository.UniqueConstraintRemoved
-	case UniqueConstraintInstanceRemove:
-		return repository.UniqueConstraintInstanceRemoved
-	default:
-		return repository.UniqueConstraintAdd
-	}
-}
-
-type BaseEventSetter[T any] interface {
+type FillFieldsEvent interface {
 	Event
-	SetBaseEvent(*BaseEvent)
-	*T
+	Fields() []*FieldOperation
 }
 
-func GenericEventMapper[T any, PT BaseEventSetter[T]](event *repository.Event) (Event, error) {
-	e := PT(new(T))
-	e.SetBaseEvent(BaseEventFromRepo(event))
+type Searcher interface {
+	// Search allows to search for specific fields of objects
+	// The instance id is taken from the context
+	// The list of conditions are combined with AND
+	// The search fields are combined with OR
+	// At least one must be defined
+	Search(ctx context.Context, conditions ...map[FieldType]any) (result []*SearchResult, err error)
+	// FillFields is to insert the fields of previously stored events
+	FillFields(ctx context.Context, events ...FillFieldsEvent) error
+}
 
-	if len(event.Data) == 0 {
-		return e, nil
+func appendEventType(typ EventType) {
+	i := sort.SearchStrings(eventTypes, string(typ))
+	if i < len(eventTypes) && eventTypes[i] == string(typ) {
+		return
 	}
-	err := json.Unmarshal(event.Data, e)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "V2-Thai6", "unable to unmarshal event")
-	}
+	eventTypes = append(eventTypes[:i], append([]string{string(typ)}, eventTypes[i:]...)...)
+}
 
-	return e, nil
+func appendAggregateType(typ AggregateType) {
+	i := sort.SearchStrings(aggregateTypes, string(typ))
+	if len(aggregateTypes) > i && aggregateTypes[i] == string(typ) {
+		return
+	}
+	aggregateTypes = append(aggregateTypes[:i], append([]string{string(typ)}, aggregateTypes[i:]...)...)
 }

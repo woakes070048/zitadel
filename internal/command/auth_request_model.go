@@ -6,9 +6,9 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/authrequest"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type AuthRequestWriteModel struct {
@@ -23,6 +23,7 @@ type AuthRequestWriteModel struct {
 	Scope            []string
 	Audience         []string
 	ResponseType     domain.OIDCResponseType
+	ResponseMode     domain.OIDCResponseMode
 	CodeChallenge    *domain.OIDCCodeChallenge
 	Prompt           []domain.Prompt
 	UILocales        []string
@@ -34,6 +35,7 @@ type AuthRequestWriteModel struct {
 	AuthTime         time.Time
 	AuthMethods      []domain.UserAuthMethodType
 	AuthRequestState domain.AuthRequestState
+	NeedRefreshToken bool
 }
 
 func NewAuthRequestWriteModel(ctx context.Context, id string) *AuthRequestWriteModel {
@@ -57,6 +59,7 @@ func (m *AuthRequestWriteModel) Reduce() error {
 			m.Scope = e.Scope
 			m.Audience = e.Audience
 			m.ResponseType = e.ResponseType
+			m.ResponseMode = e.ResponseMode
 			m.CodeChallenge = e.CodeChallenge
 			m.Prompt = e.Prompt
 			m.UILocales = e.UILocales
@@ -64,6 +67,7 @@ func (m *AuthRequestWriteModel) Reduce() error {
 			m.LoginHint = e.LoginHint
 			m.HintUserID = e.HintUserID
 			m.AuthRequestState = domain.AuthRequestStateAdded
+			m.NeedRefreshToken = e.NeedRefreshToken
 		case *authrequest.SessionLinkedEvent:
 			m.SessionID = e.SessionID
 			m.UserID = e.UserID
@@ -95,7 +99,7 @@ func (m *AuthRequestWriteModel) Query() *eventstore.SearchQueryBuilder {
 // and in case of a Code Flow the code must have been exchanged
 func (m *AuthRequestWriteModel) CheckAuthenticated() error {
 	if m.SessionID == "" {
-		return caos_errs.ThrowPreconditionFailed(nil, "AUTHR-SF2r2", "Errors.AuthRequest.NotAuthenticated")
+		return zerrors.ThrowPreconditionFailed(nil, "AUTHR-SF2r2", "Errors.AuthRequest.NotAuthenticated")
 	}
 	// in case of OIDC Code Flow, the code must have been exchanged
 	if m.ResponseType == domain.OIDCResponseTypeCode && m.AuthRequestState == domain.AuthRequestStateCodeExchanged {
@@ -106,5 +110,5 @@ func (m *AuthRequestWriteModel) CheckAuthenticated() error {
 		m.AuthRequestState == domain.AuthRequestStateAdded {
 		return nil
 	}
-	return caos_errs.ThrowPreconditionFailed(nil, "AUTHR-sajk3", "Errors.AuthRequest.NotAuthenticated")
+	return zerrors.ThrowPreconditionFailed(nil, "AUTHR-sajk3", "Errors.AuthRequest.NotAuthenticated")
 }
