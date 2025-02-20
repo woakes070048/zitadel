@@ -1,13 +1,13 @@
 import { CommonModule } from '@angular/common';
 import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
-import { MatLegacyButtonModule as MatButtonModule } from '@angular/material/legacy-button';
-import { MatLegacyCheckboxModule as MatCheckboxModule } from '@angular/material/legacy-checkbox';
-import { MatLegacyChipsModule as MatChipsModule } from '@angular/material/legacy-chips';
-import { MatLegacyProgressSpinnerModule } from '@angular/material/legacy-progress-spinner';
-import { MatLegacySelectModule as MatSelectModule } from '@angular/material/legacy-select';
-import { MatLegacyTooltipModule as MatTooltipModule } from '@angular/material/legacy-tooltip';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { TranslateModule } from '@ngx-translate/core';
 import { InputModule } from 'src/app/modules/input/input.module';
 
@@ -29,6 +29,10 @@ import { ProviderLDAPComponent } from './provider-ldap/provider-ldap.component';
 import { ProviderOAuthComponent } from './provider-oauth/provider-oauth.component';
 import { ProviderOIDCComponent } from './provider-oidc/provider-oidc.component';
 import { ProvidersRoutingModule } from './providers-routing.module';
+import { ProviderSamlSpComponent } from './provider-saml-sp/provider-saml-sp.component';
+import { CopyRowComponent } from '../../components/copy-row/copy-row.component';
+import { ProviderNextComponent } from './provider-next/provider-next.component';
+import { ProviderNextService } from './provider-next/provider-next.service';
 
 @NgModule({
   declarations: [
@@ -45,6 +49,8 @@ import { ProvidersRoutingModule } from './providers-routing.module';
     ProviderOAuthComponent,
     ProviderLDAPComponent,
     ProviderAppleComponent,
+    ProviderSamlSpComponent,
+    ProviderNextComponent,
   ],
   imports: [
     ProvidersRoutingModule,
@@ -64,7 +70,9 @@ import { ProvidersRoutingModule } from './providers-routing.module';
     MatTooltipModule,
     TranslateModule,
     ProviderOptionsModule,
-    MatLegacyProgressSpinnerModule,
+    MatProgressSpinnerModule,
+    CopyRowComponent,
   ],
+  providers: [ProviderNextService],
 })
 export default class ProvidersModule {}

@@ -14,89 +14,56 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/zitadel/zitadel/internal/database"
+	db_mock "github.com/zitadel/zitadel/internal/database/mock"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 )
 
 const (
 	expectedDeviceAuthQueryC = `SELECT` +
-		` projections.device_authorizations.id,` +
-		` projections.device_authorizations.client_id,` +
-		` projections.device_authorizations.scopes,` +
-		` projections.device_authorizations.expires,` +
-		` projections.device_authorizations.state,` +
-		` projections.device_authorizations.subject` +
-		` FROM projections.device_authorizations`
-	expectedDeviceAuthWhereDeviceCodeQueryC = expectedDeviceAuthQueryC +
-		` WHERE projections.device_authorizations.client_id = $1` +
-		` AND projections.device_authorizations.device_code = $2` +
-		` AND projections.device_authorizations.instance_id = $3`
+		` projections.device_auth_requests2.client_id,` +
+		` projections.device_auth_requests2.device_code,` +
+		` projections.device_auth_requests2.user_code,` +
+		` projections.device_auth_requests2.scopes,` +
+		` projections.device_auth_requests2.audience` +
+		` FROM projections.device_auth_requests2`
 	expectedDeviceAuthWhereUserCodeQueryC = expectedDeviceAuthQueryC +
-		` WHERE projections.device_authorizations.instance_id = $1` +
-		` AND projections.device_authorizations.user_code = $2`
+		` WHERE projections.device_auth_requests2.instance_id = $1` +
+		` AND projections.device_auth_requests2.user_code = $2`
 )
 
 var (
-	expectedDeviceAuthQuery                = regexp.QuoteMeta(expectedDeviceAuthQueryC)
-	expectedDeviceAuthWhereDeviceCodeQuery = regexp.QuoteMeta(expectedDeviceAuthWhereDeviceCodeQueryC)
-	expectedDeviceAuthWhereUserCodeQuery   = regexp.QuoteMeta(expectedDeviceAuthWhereUserCodeQueryC)
-	expectedDeviceAuthValues               = []driver.Value{
-		"primary-id",
+	expectedDeviceAuthQuery              = regexp.QuoteMeta(expectedDeviceAuthQueryC)
+	expectedDeviceAuthWhereUserCodeQuery = regexp.QuoteMeta(expectedDeviceAuthWhereUserCodeQueryC)
+	expectedDeviceAuthValues             = []driver.Value{
 		"client-id",
-		database.StringArray{"a", "b", "c"},
-		testNow,
-		domain.DeviceAuthStateApproved,
-		"subject",
+		"device1",
+		"user-code",
+		database.TextArray[string]{"a", "b", "c"},
+		[]string{"projectID", "clientID"},
 	}
-	expectedDeviceAuth = &domain.DeviceAuth{
-		ObjectRoot: models.ObjectRoot{
-			AggregateID: "primary-id",
-		},
-		ClientID: "client-id",
-		Scopes:   []string{"a", "b", "c"},
-		Expires:  testNow,
-		State:    domain.DeviceAuthStateApproved,
-		Subject:  "subject",
+	expectedDeviceAuth = &domain.AuthRequestDevice{
+		ClientID:   "client-id",
+		DeviceCode: "device1",
+		UserCode:   "user-code",
+		Scopes:     []string{"a", "b", "c"},
+		Audience:   []string{"projectID", "clientID"},
 	}
 )
 
-func TestQueries_DeviceAuthByDeviceCode(t *testing.T) {
-	client, mock, err := sqlmock.New()
+func TestQueries_DeviceAuthRequestByUserCode(t *testing.T) {
+	client, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 	if err != nil {
 		t.Fatalf("failed to build mock client: %v", err)
 	}
 	defer client.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(expectedDeviceAuthWhereDeviceCodeQuery).WillReturnRows(
-		sqlmock.NewRows(deviceAuthSelectColumns).AddRow(expectedDeviceAuthValues...),
-	)
-	mock.ExpectCommit()
-	q := Queries{
-		client: &database.DB{DB: client},
-	}
-	got, err := q.DeviceAuthByDeviceCode(context.TODO(), "123", "456")
-	require.NoError(t, err)
-	assert.Equal(t, expectedDeviceAuth, got)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestQueries_DeviceAuthByUserCode(t *testing.T) {
-	client, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to build mock client: %v", err)
-	}
-	defer client.Close()
-
-	mock.ExpectBegin()
 	mock.ExpectQuery(expectedDeviceAuthWhereUserCodeQuery).WillReturnRows(
-		sqlmock.NewRows(deviceAuthSelectColumns).AddRow(expectedDeviceAuthValues...),
+		mock.NewRows(deviceAuthSelectColumns).AddRow(expectedDeviceAuthValues...),
 	)
-	mock.ExpectCommit()
 	q := Queries{
 		client: &database.DB{DB: client},
 	}
-	got, err := q.DeviceAuthByUserCode(context.TODO(), "789")
+	got, err := q.DeviceAuthRequestByUserCode(context.TODO(), "789")
 	require.NoError(t, err)
 	assert.Equal(t, expectedDeviceAuth, got)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -110,7 +77,7 @@ func Test_prepareDeviceAuthQuery(t *testing.T) {
 	tests := []struct {
 		name   string
 		want   want
-		object any
+		object *domain.AuthRequestDevice
 	}{
 		{
 			name: "success",
@@ -137,7 +104,7 @@ func Test_prepareDeviceAuthQuery(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: (*domain.DeviceAuth)(nil),
+			object: nil,
 		},
 		{
 			name: "other error",
@@ -153,7 +120,7 @@ func Test_prepareDeviceAuthQuery(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: (*domain.DeviceAuth)(nil),
+			object: nil,
 		},
 	}
 	for _, tt := range tests {

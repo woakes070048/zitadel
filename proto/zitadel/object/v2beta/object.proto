@@ -8,7 +8,15 @@ import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "validate/validate.proto";
 
+// Deprecated: use Organization
 message Organisation {
+  oneof org {
+    string org_id = 1;
+    string org_domain = 2;
+  }
+}
+
+message Organization {
   oneof org {
     string org_id = 1;
     string org_domain = 2;
@@ -88,4 +96,27 @@ message ListDetails {
       description: "the last time the projection got updated"
     }
   ];
+}
+
+enum TextQueryMethod {
+  TEXT_QUERY_METHOD_EQUALS = 0;
+  TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE = 1;
+  TEXT_QUERY_METHOD_STARTS_WITH = 2;
+  TEXT_QUERY_METHOD_STARTS_WITH_IGNORE_CASE = 3;
+  TEXT_QUERY_METHOD_CONTAINS = 4;
+  TEXT_QUERY_METHOD_CONTAINS_IGNORE_CASE = 5;
+  TEXT_QUERY_METHOD_ENDS_WITH = 6;
+  TEXT_QUERY_METHOD_ENDS_WITH_IGNORE_CASE = 7;
+}
+
+enum ListQueryMethod {
+  LIST_QUERY_METHOD_IN = 0;
+}
+
+enum TimestampQueryMethod {
+  TIMESTAMP_QUERY_METHOD_EQUALS = 0;
+  TIMESTAMP_QUERY_METHOD_GREATER = 1;
+  TIMESTAMP_QUERY_METHOD_GREATER_OR_EQUALS = 2;
+  TIMESTAMP_QUERY_METHOD_LESS = 3;
+  TIMESTAMP_QUERY_METHOD_LESS_OR_EQUALS = 4;
 }

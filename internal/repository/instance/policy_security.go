@@ -2,11 +2,9 @@ package instance
 
 import (
 	"context"
-	"encoding/json"
 
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -17,8 +15,12 @@ const (
 type SecurityPolicySetEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Enabled        *bool     `json:"enabled,omitempty"`
-	AllowedOrigins *[]string `json:"allowedOrigins,omitempty"`
+	// Enabled is a legacy field which was used before for Iframe Embedding.
+	// It is kept so older events can still be reduced.
+	Enabled               *bool     `json:"enabled,omitempty"`
+	EnableIframeEmbedding *bool     `json:"enable_iframe_embedding,omitempty"`
+	AllowedOrigins        *[]string `json:"allowedOrigins,omitempty"`
+	EnableImpersonation   *bool     `json:"enable_impersonation,omitempty"`
 }
 
 func NewSecurityPolicySetEvent(
@@ -27,7 +29,7 @@ func NewSecurityPolicySetEvent(
 	changes []SecurityPolicyChanges,
 ) (*SecurityPolicySetEvent, error) {
 	if len(changes) == 0 {
-		return nil, errors.ThrowPreconditionFailed(nil, "POLICY-EWsf3", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "POLICY-EWsf3", "Errors.NoChangesFound")
 	}
 	event := &SecurityPolicySetEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -44,9 +46,9 @@ func NewSecurityPolicySetEvent(
 
 type SecurityPolicyChanges func(event *SecurityPolicySetEvent)
 
-func ChangeSecurityPolicyEnabled(enabled bool) func(event *SecurityPolicySetEvent) {
+func ChangeSecurityPolicyEnableIframeEmbedding(enabled bool) func(event *SecurityPolicySetEvent) {
 	return func(e *SecurityPolicySetEvent) {
-		e.Enabled = &enabled
+		e.EnableIframeEmbedding = &enabled
 	}
 }
 
@@ -59,21 +61,27 @@ func ChangeSecurityPolicyAllowedOrigins(allowedOrigins []string) func(event *Sec
 	}
 }
 
-func (e *SecurityPolicySetEvent) Data() interface{} {
+func ChangeSecurityPolicyEnableImpersonation(enabled bool) func(event *SecurityPolicySetEvent) {
+	return func(e *SecurityPolicySetEvent) {
+		e.EnableImpersonation = &enabled
+	}
+}
+
+func (e *SecurityPolicySetEvent) Payload() interface{} {
 	return e
 }
 
-func (e *SecurityPolicySetEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *SecurityPolicySetEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
-func SecurityPolicySetEventMapper(event *repository.Event) (eventstore.Event, error) {
+func SecurityPolicySetEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	securityPolicyAdded := &SecurityPolicySetEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, securityPolicyAdded)
+	err := event.Unmarshal(securityPolicyAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "IAM-soiwj", "unable to unmarshal oidc config added")
+		return nil, zerrors.ThrowInternal(err, "IAM-soiwj", "unable to unmarshal oidc config added")
 	}
 
 	return securityPolicyAdded, nil

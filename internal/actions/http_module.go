@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,13 +14,13 @@ import (
 	"github.com/dop251/goja"
 	"github.com/zitadel/logging"
 
-	z_errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func WithHTTP(ctx context.Context) Option {
 	return func(c *runConfig) {
 		c.modules["zitadel/http"] = func(runtime *goja.Runtime, module *goja.Object) {
-			requireHTTP(ctx, &http.Client{Transport: new(transport)}, runtime, module)
+			requireHTTP(ctx, &http.Client{Transport: &transport{lookup: net.LookupIP}}, runtime, module)
 		}
 	}
 }
@@ -66,7 +67,7 @@ func (c *HTTP) fetchConfigFromArg(arg *goja.Object, config *fetchConfig) (err er
 			}
 			config.Body = bytes.NewReader(body)
 		default:
-			return z_errs.ThrowInvalidArgument(nil, "ACTIO-OfUeA", "key is invalid")
+			return zerrors.ThrowInvalidArgument(nil, "ACTIO-OfUeA", "key is invalid")
 		}
 	}
 	return nil
@@ -170,21 +171,34 @@ func parseHeaders(headers *goja.Object) http.Header {
 	return h
 }
 
-type transport struct{}
+type transport struct {
+	lookup func(string) ([]net.IP, error)
+}
 
-func (*transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if httpConfig == nil {
 		return http.DefaultTransport.RoundTrip(req)
 	}
-	if isHostBlocked(httpConfig.DenyList, req.URL) {
-		return nil, z_errs.ThrowInvalidArgument(nil, "ACTIO-N72d0", "host is denied")
+	if t.isHostBlocked(httpConfig.DenyList, req.URL) {
+		return nil, zerrors.ThrowInvalidArgument(nil, "ACTIO-N72d0", "host is denied")
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-func isHostBlocked(denyList []AddressChecker, address *url.URL) bool {
+func (t *transport) isHostBlocked(denyList []AddressChecker, address *url.URL) bool {
+	host := address.Hostname()
+	ip := net.ParseIP(host)
+	ips := []net.IP{ip}
+	// if the hostname is a domain, we need to check resolve the ip(s), since it might be denied
+	if ip == nil {
+		var err error
+		ips, err = t.lookup(host)
+		if err != nil {
+			return true
+		}
+	}
 	for _, blocked := range denyList {
-		if blocked.Matches(address.Hostname()) {
+		if blocked.Matches(ips, host) {
 			return true
 		}
 	}
@@ -192,5 +206,5 @@ func isHostBlocked(denyList []AddressChecker, address *url.URL) bool {
 }
 
 type AddressChecker interface {
-	Matches(string) bool
+	Matches([]net.IP, string) bool
 }

@@ -23,6 +23,7 @@ type Provider struct {
 	userObjectClasses []string
 	userFilters       []string
 	timeout           time.Duration
+	rootCA            []byte
 
 	loginUrl string
 
@@ -185,6 +186,7 @@ func New(
 	userObjectClasses []string,
 	userFilters []string,
 	timeout time.Duration,
+	rootCA []byte,
 	loginUrl string,
 	options ...ProviderOpts,
 ) *Provider {
@@ -199,6 +201,7 @@ func New(
 		userObjectClasses: userObjectClasses,
 		userFilters:       userFilters,
 		timeout:           timeout,
+		rootCA:            rootCA,
 		loginUrl:          loginUrl,
 	}
 	for _, option := range options {
@@ -211,7 +214,7 @@ func (p *Provider) Name() string {
 	return p.name
 }
 
-func (p *Provider) BeginAuth(ctx context.Context, state string, params ...any) (idp.Session, error) {
+func (p *Provider) BeginAuth(ctx context.Context, state string, _ ...idp.Parameter) (idp.Session, error) {
 	return &Session{
 		Provider: p,
 		loginUrl: p.loginUrl + state,

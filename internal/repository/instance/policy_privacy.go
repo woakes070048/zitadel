@@ -5,7 +5,6 @@ import (
 
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 )
 
@@ -25,6 +24,7 @@ func NewPrivacyPolicyAddedEvent(
 	privacyLink,
 	helpLink string,
 	supportEmail domain.EmailAddress,
+	docsLink, customLink, customLinkText string,
 ) *PrivacyPolicyAddedEvent {
 	return &PrivacyPolicyAddedEvent{
 		PrivacyPolicyAddedEvent: *policy.NewPrivacyPolicyAddedEvent(
@@ -35,11 +35,14 @@ func NewPrivacyPolicyAddedEvent(
 			tosLink,
 			privacyLink,
 			helpLink,
-			supportEmail),
+			supportEmail,
+			docsLink,
+			customLink,
+			customLinkText),
 	}
 }
 
-func PrivacyPolicyAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func PrivacyPolicyAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := policy.PrivacyPolicyAddedEventMapper(event)
 	if err != nil {
 		return nil, err
@@ -70,7 +73,7 @@ func NewPrivacyPolicyChangedEvent(
 	return &PrivacyPolicyChangedEvent{PrivacyPolicyChangedEvent: *changedEvent}, nil
 }
 
-func PrivacyPolicyChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func PrivacyPolicyChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := policy.PrivacyPolicyChangedEventMapper(event)
 	if err != nil {
 		return nil, err

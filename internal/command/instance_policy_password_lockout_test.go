@@ -8,12 +8,11 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/policy"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
@@ -23,6 +22,7 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 	type args struct {
 		ctx                 context.Context
 		maxPasswordAttempts uint64
+		maxOTPAttempts      uint64
 		showLockOutFailures bool
 	}
 	type res struct {
@@ -45,6 +45,7 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 							instance.NewLockoutPolicyAddedEvent(context.Background(),
 								&instance.NewAggregate("INSTANCE").Aggregate,
 								10,
+								10,
 								true,
 							),
 						),
@@ -57,7 +58,7 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 				showLockOutFailures: true,
 			},
 			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
@@ -67,22 +68,19 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 					t,
 					expectFilter(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusherWithInstanceID(
-								"INSTANCE",
-								instance.NewLockoutPolicyAddedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									10,
-									true,
-								),
-							),
-						},
+						instance.NewLockoutPolicyAddedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							10,
+							10,
+							true,
+						),
 					),
 				),
 			},
 			args: args{
 				ctx:                 authz.WithInstanceID(context.Background(), "INSTANCE"),
 				maxPasswordAttempts: 10,
+				maxOTPAttempts:      10,
 				showLockOutFailures: true,
 			},
 			res: res{
@@ -97,7 +95,7 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 			r := &Commands{
 				eventstore: tt.fields.eventstore,
 			}
-			got, err := r.AddDefaultLockoutPolicy(tt.args.ctx, tt.args.maxPasswordAttempts, tt.args.showLockOutFailures)
+			got, err := r.AddDefaultLockoutPolicy(tt.args.ctx, tt.args.maxPasswordAttempts, tt.args.maxOTPAttempts, tt.args.showLockOutFailures)
 			if tt.res.err == nil {
 				assert.NoError(t, err)
 			}
@@ -105,7 +103,7 @@ func TestCommandSide_AddDefaultLockoutPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -141,11 +139,12 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 				ctx: context.Background(),
 				policy: &domain.LockoutPolicy{
 					MaxPasswordAttempts: 10,
+					MaxOTPAttempts:      10,
 					ShowLockOutFailures: true,
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -158,6 +157,7 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 							instance.NewLockoutPolicyAddedEvent(context.Background(),
 								&instance.NewAggregate("INSTANCE").Aggregate,
 								10,
+								10,
 								true,
 							),
 						),
@@ -168,11 +168,12 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 				ctx: context.Background(),
 				policy: &domain.LockoutPolicy{
 					MaxPasswordAttempts: 10,
+					MaxOTPAttempts:      10,
 					ShowLockOutFailures: true,
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -185,16 +186,13 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 							instance.NewLockoutPolicyAddedEvent(context.Background(),
 								&instance.NewAggregate("INSTANCE").Aggregate,
 								10,
+								10,
 								true,
 							),
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								newDefaultLockoutPolicyChangedEvent(context.Background(), 20, false),
-							),
-						},
+						newDefaultLockoutPolicyChangedEvent(context.Background(), 20, 20, false),
 					),
 				),
 			},
@@ -202,6 +200,7 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 				ctx: context.Background(),
 				policy: &domain.LockoutPolicy{
 					MaxPasswordAttempts: 20,
+					MaxOTPAttempts:      20,
 					ShowLockOutFailures: false,
 				},
 			},
@@ -210,8 +209,10 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 					ObjectRoot: models.ObjectRoot{
 						AggregateID:   "INSTANCE",
 						ResourceOwner: "INSTANCE",
+						InstanceID:    "INSTANCE",
 					},
 					MaxPasswordAttempts: 20,
+					MaxOTPAttempts:      20,
 					ShowLockOutFailures: false,
 				},
 			},
@@ -236,11 +237,12 @@ func TestCommandSide_ChangeDefaultLockoutPolicy(t *testing.T) {
 	}
 }
 
-func newDefaultLockoutPolicyChangedEvent(ctx context.Context, maxAttempts uint64, showLockoutFailure bool) *instance.LockoutPolicyChangedEvent {
+func newDefaultLockoutPolicyChangedEvent(ctx context.Context, maxPasswordAttempts, maxOTPAttempts uint64, showLockoutFailure bool) *instance.LockoutPolicyChangedEvent {
 	event, _ := instance.NewLockoutPolicyChangedEvent(ctx,
 		&instance.NewAggregate("INSTANCE").Aggregate,
 		[]policy.LockoutPolicyChanges{
-			policy.ChangeMaxAttempts(maxAttempts),
+			policy.ChangeMaxPasswordAttempts(maxPasswordAttempts),
+			policy.ChangeMaxOTPAttempts(maxOTPAttempts),
 			policy.ChangeShowLockOutFailures(showLockoutFailure),
 		},
 	)

@@ -7,7 +7,7 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/zitadel/logging"
-	"github.com/zitadel/oidc/v2/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/actions"
@@ -46,7 +46,7 @@ func (l *Login) runPostExternalAuthenticationActions(
 	if resourceOwner == "" {
 		resourceOwner = authz.GetInstance(ctx).DefaultOrganisationID()
 	}
-	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeExternalAuthentication, domain.TriggerTypePostAuthentication, resourceOwner, false)
+	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeExternalAuthentication, domain.TriggerTypePostAuthentication, resourceOwner)
 	if err != nil {
 		return nil, false, err
 	}
@@ -122,6 +122,24 @@ func (l *Login) runPostExternalAuthenticationActions(
 				actions.SetFields("authRequest", object.AuthRequestField(authRequest)),
 				actions.SetFields("httpRequest", object.HTTPRequestField(httpRequest)),
 				actions.SetFields("authError", authErrStr),
+				actions.SetFields("org",
+					actions.SetFields("getMetadata", func(c *actions.FieldConfig) interface{} {
+						return func(goja.FunctionCall) goja.Value {
+							metadata, err := l.query.SearchOrgMetadata(
+								ctx,
+								true,
+								resourceOwner,
+								&query.OrgMetadataSearchQueries{},
+								false,
+							)
+							if err != nil {
+								logging.WithError(err).Info("unable to get org metadata in action")
+								panic(err)
+							}
+							return object.OrgMetadataListFromQuery(c, metadata)
+						}
+					}),
+				),
 			),
 		)
 
@@ -133,7 +151,7 @@ func (l *Login) runPostExternalAuthenticationActions(
 			apiFields,
 			a.Script,
 			a.Name,
-			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx))...,
+			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx), actions.WithUUID(actionCtx))...,
 		)
 		cancel()
 		if err != nil {
@@ -168,7 +186,7 @@ func (l *Login) runPostInternalAuthenticationActions(
 		resourceOwner = authRequest.UserOrgID
 	}
 
-	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeInternalAuthentication, domain.TriggerTypePostAuthentication, resourceOwner, false)
+	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeInternalAuthentication, domain.TriggerTypePostAuthentication, resourceOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +224,7 @@ func (l *Login) runPostInternalAuthenticationActions(
 			apiFields,
 			a.Script,
 			a.Name,
-			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx))...,
+			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx), actions.WithUUID(actionCtx))...,
 		)
 		cancel()
 		if err != nil {
@@ -226,7 +244,7 @@ func (l *Login) runPreCreationActions(
 ) (*domain.Human, []*domain.Metadata, error) {
 	ctx := httpRequest.Context()
 
-	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, flowType, domain.TriggerTypePreCreation, resourceOwner, false)
+	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, flowType, domain.TriggerTypePreCreation, resourceOwner)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -298,6 +316,24 @@ func (l *Login) runPreCreationActions(
 				}),
 				actions.SetFields("authRequest", object.AuthRequestField(authRequest)),
 				actions.SetFields("httpRequest", object.HTTPRequestField(httpRequest)),
+				actions.SetFields("org",
+					actions.SetFields("getMetadata", func(c *actions.FieldConfig) interface{} {
+						return func(goja.FunctionCall) goja.Value {
+							metadata, err := l.query.SearchOrgMetadata(
+								ctx,
+								true,
+								resourceOwner,
+								&query.OrgMetadataSearchQueries{},
+								false,
+							)
+							if err != nil {
+								logging.WithError(err).Info("unable to get org metadata in action")
+								panic(err)
+							}
+							return object.OrgMetadataListFromQuery(c, metadata)
+						}
+					}),
+				),
 			),
 		)
 
@@ -307,7 +343,7 @@ func (l *Login) runPreCreationActions(
 			apiFields,
 			a.Script,
 			a.Name,
-			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx))...,
+			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx), actions.WithUUID(actionCtx))...,
 		)
 		cancel()
 		if err != nil {
@@ -326,7 +362,7 @@ func (l *Login) runPostCreationActions(
 ) ([]*domain.UserGrant, error) {
 	ctx := httpRequest.Context()
 
-	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, flowType, domain.TriggerTypePostCreation, resourceOwner, false)
+	triggerActions, err := l.query.GetActiveActionsByFlowAndTriggerType(ctx, flowType, domain.TriggerTypePostCreation, resourceOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +383,7 @@ func (l *Login) runPostCreationActions(
 			actions.SetFields("v1",
 				actions.SetFields("getUser", func(c *actions.FieldConfig) interface{} {
 					return func(call goja.FunctionCall) goja.Value {
-						user, err := l.query.GetUserByID(actionCtx, true, userID, false)
+						user, err := l.query.GetUserByID(actionCtx, true, userID)
 						if err != nil {
 							panic(err)
 						}
@@ -356,6 +392,24 @@ func (l *Login) runPostCreationActions(
 				}),
 				actions.SetFields("authRequest", object.AuthRequestField(authRequest)),
 				actions.SetFields("httpRequest", object.HTTPRequestField(httpRequest)),
+				actions.SetFields("org",
+					actions.SetFields("getMetadata", func(c *actions.FieldConfig) interface{} {
+						return func(goja.FunctionCall) goja.Value {
+							metadata, err := l.query.SearchOrgMetadata(
+								ctx,
+								true,
+								resourceOwner,
+								&query.OrgMetadataSearchQueries{},
+								false,
+							)
+							if err != nil {
+								logging.WithError(err).Info("unable to get org metadata in action")
+								panic(err)
+							}
+							return object.OrgMetadataListFromQuery(c, metadata)
+						}
+					}),
+				),
 			),
 		)
 
@@ -365,7 +419,7 @@ func (l *Login) runPostCreationActions(
 			apiFields,
 			a.Script,
 			a.Name,
-			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx))...,
+			append(actions.ActionToOptions(a), actions.WithHTTP(actionCtx), actions.WithUUID(actionCtx))...,
 		)
 		cancel()
 		if err != nil {
@@ -425,7 +479,7 @@ func (l *Login) resourceOwnerOfUserIDPLink(ctx context.Context, idpConfigID stri
 	queries := []query.SearchQuery{
 		idQuery, externalIDQuery,
 	}
-	links, err := l.query.IDPUserLinks(ctx, &query.IDPUserLinksSearchQuery{Queries: queries}, false)
+	links, err := l.query.IDPUserLinks(ctx, &query.IDPUserLinksSearchQuery{Queries: queries}, nil)
 	if err != nil {
 		return "", err
 	}

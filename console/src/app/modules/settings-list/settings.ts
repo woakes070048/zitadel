@@ -1,9 +1,27 @@
 import { PolicyComponentServiceType } from '../policies/policy-component-types.enum';
 import { SidenavSetting } from '../sidenav/sidenav.component';
 
-export const GENERAL: SidenavSetting = {
-  id: 'general',
-  i18nKey: 'SETTINGS.LIST.GENERAL',
+export const ORGANIZATIONS: SidenavSetting = {
+  id: 'organizations',
+  i18nKey: 'SETTINGS.LIST.ORGS',
+  groupI18nKey: 'SETTINGS.GROUPS.GENERAL',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['iam.read'],
+  },
+};
+
+export const FEATURESETTINGS: SidenavSetting = {
+  id: 'features',
+  i18nKey: 'SETTINGS.LIST.FEATURESETTINGS',
+  groupI18nKey: 'SETTINGS.GROUPS.GENERAL',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['iam.restrictions.read'],
+  },
+};
+
+export const LANGUAGES: SidenavSetting = {
+  id: 'languages',
+  i18nKey: 'SETTINGS.LIST.LANGUAGES',
   requiredRoles: {
     [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
   },
@@ -33,6 +51,33 @@ export const SECURITY: SidenavSetting = {
   },
 };
 
+export const VIEWS: SidenavSetting = {
+  id: 'views',
+  i18nKey: 'SETTINGS.LIST.VIEWS',
+  groupI18nKey: 'SETTINGS.GROUPS.STORAGE',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['iam.read'],
+  },
+};
+
+export const FAILEDEVENTS: SidenavSetting = {
+  id: 'failedevents',
+  i18nKey: 'SETTINGS.LIST.FAILEDEVENTS',
+  groupI18nKey: 'SETTINGS.GROUPS.STORAGE',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['iam.read'],
+  },
+};
+
+export const EVENTS: SidenavSetting = {
+  id: 'events',
+  i18nKey: 'SETTINGS.LIST.EVENTS',
+  groupI18nKey: 'SETTINGS.GROUPS.STORAGE',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['events.read'],
+  },
+};
+
 export const LOGIN: SidenavSetting = {
   id: 'login',
   i18nKey: 'SETTINGS.LIST.LOGIN',
@@ -40,6 +85,15 @@ export const LOGIN: SidenavSetting = {
   requiredRoles: {
     [PolicyComponentServiceType.MGMT]: ['policy.read'],
     [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
+  },
+};
+
+export const VERIFIED_DOMAINS: SidenavSetting = {
+  id: 'verified_domains',
+  i18nKey: 'SETTINGS.LIST.VERIFIED_DOMAINS',
+  groupI18nKey: 'SETTINGS.GROUPS.DOMAIN',
+  requiredRoles: {
+    [PolicyComponentServiceType.MGMT]: ['org.read'],
   },
 };
 
@@ -56,6 +110,16 @@ export const DOMAIN: SidenavSetting = {
 export const LOCKOUT: SidenavSetting = {
   id: 'lockout',
   i18nKey: 'SETTINGS.LIST.LOCKOUT',
+  groupI18nKey: 'SETTINGS.GROUPS.LOGIN',
+  requiredRoles: {
+    [PolicyComponentServiceType.MGMT]: ['policy.read'],
+    [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
+  },
+};
+
+export const AGE: SidenavSetting = {
+  id: 'age',
+  i18nKey: 'SETTINGS.LIST.AGE',
   groupI18nKey: 'SETTINGS.GROUPS.LOGIN',
   requiredRoles: {
     [PolicyComponentServiceType.MGMT]: ['policy.read'],
@@ -89,15 +153,25 @@ export const NOTIFICATIONS: SidenavSetting = {
   groupI18nKey: 'SETTINGS.GROUPS.NOTIFICATIONS',
   requiredRoles: {
     [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
+    [PolicyComponentServiceType.MGMT]: ['policy.read'],
   },
 };
 
-export const NOTIFICATION_POLICY: SidenavSetting = {
-  id: 'notifications',
-  i18nKey: 'SETTINGS.LIST.NOTIFICATIONS',
+export const SMTP_PROVIDER: SidenavSetting = {
+  id: 'smtpprovider',
+  i18nKey: 'SETTINGS.LIST.SMTP_PROVIDER',
   groupI18nKey: 'SETTINGS.GROUPS.NOTIFICATIONS',
   requiredRoles: {
-    [PolicyComponentServiceType.MGMT]: ['policy.read'],
+    [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
+  },
+};
+
+export const SMS_PROVIDER: SidenavSetting = {
+  id: 'smsprovider',
+  i18nKey: 'SETTINGS.LIST.SMS_PROVIDER',
+  groupI18nKey: 'SETTINGS.GROUPS.NOTIFICATIONS',
+  requiredRoles: {
+    [PolicyComponentServiceType.ADMIN]: ['iam.policy.read'],
   },
 };
 
@@ -123,7 +197,7 @@ export const LOGINTEXTS: SidenavSetting = {
 
 export const PRIVACYPOLICY: SidenavSetting = {
   id: 'privacypolicy',
-  i18nKey: 'SETTINGS.LIST.PRIVACYPOLICY',
+  i18nKey: 'DESCRIPTIONS.SETTINGS.PRIVACY_POLICY.TITLE',
   groupI18nKey: 'SETTINGS.GROUPS.OTHER',
   requiredRoles: {
     [PolicyComponentServiceType.MGMT]: ['policy.read'],

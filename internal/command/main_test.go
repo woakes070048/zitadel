@@ -7,54 +7,40 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/zitadel/passwap"
 	"github.com/zitadel/passwap/verifier"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/repository/mock"
-	action_repo "github.com/zitadel/zitadel/internal/repository/action"
-	"github.com/zitadel/zitadel/internal/repository/authrequest"
-	"github.com/zitadel/zitadel/internal/repository/idpintent"
-	iam_repo "github.com/zitadel/zitadel/internal/repository/instance"
-	key_repo "github.com/zitadel/zitadel/internal/repository/keypair"
-	"github.com/zitadel/zitadel/internal/repository/oidcsession"
-	"github.com/zitadel/zitadel/internal/repository/org"
-	proj_repo "github.com/zitadel/zitadel/internal/repository/project"
-	quota_repo "github.com/zitadel/zitadel/internal/repository/quota"
-	"github.com/zitadel/zitadel/internal/repository/session"
-	usr_repo "github.com/zitadel/zitadel/internal/repository/user"
-	"github.com/zitadel/zitadel/internal/repository/usergrant"
+	"github.com/zitadel/zitadel/internal/feature"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type expect func(mockRepository *mock.MockRepository)
 
+// Deprecated: use expectEventstore
 func eventstoreExpect(t *testing.T, expects ...expect) *eventstore.Eventstore {
 	m := mock.NewRepo(t)
 	for _, e := range expects {
 		e(m)
 	}
-	es := eventstore.NewEventstore(eventstore.TestConfig(m))
-	iam_repo.RegisterEventMappers(es)
-	org.RegisterEventMappers(es)
-	usr_repo.RegisterEventMappers(es)
-	proj_repo.RegisterEventMappers(es)
-	usergrant.RegisterEventMappers(es)
-	key_repo.RegisterEventMappers(es)
-	action_repo.RegisterEventMappers(es)
-	session.RegisterEventMappers(es)
-	idpintent.RegisterEventMappers(es)
-	authrequest.RegisterEventMappers(es)
-	oidcsession.RegisterEventMappers(es)
-	quota_repo.RegisterEventMappers(es)
+	es := eventstore.NewEventstore(
+		&eventstore.Config{
+			Querier: m.MockQuerier,
+			Pusher:  m.MockPusher,
+		},
+	)
 	return es
 }
 
+// expectEventstore defines expectations for the Eventstore and is initialized within the scope of a (sub) test.
+// This allows proper reporting of the test name, instead of reporting on the top-level
+// of the Test function being run.
 func expectEventstore(expects ...expect) func(*testing.T) *eventstore.Eventstore {
 	return func(t *testing.T) *eventstore.Eventstore {
 		return eventstoreExpect(t, expects...)
@@ -70,89 +56,49 @@ func eventPusherToEvents(eventsPushes ...eventstore.Command) []*repository.Event
 		}
 		events[i] = &repository.Event{
 			AggregateID:   event.Aggregate().ID,
-			AggregateType: repository.AggregateType(event.Aggregate().Type),
+			AggregateType: event.Aggregate().Type,
 			ResourceOwner: sql.NullString{String: event.Aggregate().ResourceOwner, Valid: event.Aggregate().ResourceOwner != ""},
-			EditorService: event.EditorService(),
-			EditorUser:    event.EditorUser(),
-			Type:          repository.EventType(event.Type()),
-			Version:       repository.Version(event.Aggregate().Version),
+			EditorUser:    event.Creator(),
+			Typ:           event.Type(),
+			Version:       event.Aggregate().Version,
 			Data:          data,
+			Constraints:   event.UniqueConstraints(),
 		}
 	}
 	return events
 }
 
-type testRepo struct {
-	events            []*repository.Event
-	uniqueConstraints []*repository.UniqueConstraint
-	sequence          uint64
-	err               error
-	t                 *testing.T
-}
-
-func (repo *testRepo) Health(ctx context.Context) error {
-	return nil
-}
-
-func (repo *testRepo) Push(ctx context.Context, events []*repository.Event, uniqueConstraints ...*repository.UniqueConstraint) error {
-	repo.events = append(repo.events, events...)
-	repo.uniqueConstraints = append(repo.uniqueConstraints, uniqueConstraints...)
-	return nil
-}
-
-func (repo *testRepo) Filter(ctx context.Context, searchQuery *repository.SearchQuery) ([]*repository.Event, error) {
-	events := make([]*repository.Event, 0, len(repo.events))
-	for _, event := range repo.events {
-		for _, filter := range searchQuery.Filters {
-			for _, f := range filter {
-				if f.Field == repository.FieldAggregateType {
-					if event.AggregateType != f.Value {
-						continue
-					}
-				}
-			}
-		}
-		events = append(events, event)
-	}
-	return repo.events, nil
-}
-
-func filterAggregateType(aggregateType string) {
-
-}
-
-func (repo *testRepo) LatestSequence(ctx context.Context, queryFactory *repository.SearchQuery) (uint64, error) {
-	if repo.err != nil {
-		return 0, repo.err
-	}
-	return repo.sequence, nil
-}
-
-func expectPush(events []*repository.Event, uniqueConstraints ...*repository.UniqueConstraint) expect {
+func expectPush(commands ...eventstore.Command) expect {
 	return func(m *mock.MockRepository) {
-		m.ExpectPush(events, uniqueConstraints...)
+		m.ExpectPush(commands, 0)
 	}
 }
 
-func expectPushFailed(err error, events []*repository.Event, uniqueConstraints ...*repository.UniqueConstraint) expect {
+func expectPushSlow(sleep time.Duration, commands ...eventstore.Command) expect {
 	return func(m *mock.MockRepository) {
-		m.ExpectPushFailed(err, events, uniqueConstraints...)
+		m.ExpectPush(commands, sleep)
 	}
 }
 
-func expectRandomPush(events []*repository.Event, uniqueConstraints ...*repository.UniqueConstraint) expect {
+func expectPushFailed(err error, commands ...eventstore.Command) expect {
 	return func(m *mock.MockRepository) {
-		m.ExpectRandomPush(events, uniqueConstraints...)
+		m.ExpectPushFailed(err, commands)
 	}
 }
 
-func expectRandomPushFailed(err error, events []*repository.Event, uniqueConstraints ...*repository.UniqueConstraint) expect {
+func expectRandomPush(events []eventstore.Command) expect {
 	return func(m *mock.MockRepository) {
-		m.ExpectRandomPushFailed(err, events, uniqueConstraints...)
+		m.ExpectRandomPush(events)
 	}
 }
 
-func expectFilter(events ...*repository.Event) expect {
+func expectRandomPushFailed(err error, events []eventstore.Command) expect {
+	return func(m *mock.MockRepository) {
+		m.ExpectRandomPushFailed(err, events)
+	}
+}
+
+func expectFilter(events ...eventstore.Event) expect {
 	return func(m *mock.MockRepository) {
 		m.ExpectFilterEvents(events...)
 	}
@@ -178,39 +124,35 @@ func expectFilterOrgMemberNotFound() expect {
 func eventFromEventPusher(event eventstore.Command) *repository.Event {
 	data, _ := eventstore.EventData(event)
 	return &repository.Event{
-		ID:                            "",
-		Sequence:                      0,
-		PreviousAggregateSequence:     0,
-		PreviousAggregateTypeSequence: 0,
-		CreationDate:                  time.Time{},
-		Type:                          repository.EventType(event.Type()),
-		Data:                          data,
-		EditorService:                 event.EditorService(),
-		EditorUser:                    event.EditorUser(),
-		Version:                       repository.Version(event.Aggregate().Version),
-		AggregateID:                   event.Aggregate().ID,
-		AggregateType:                 repository.AggregateType(event.Aggregate().Type),
-		ResourceOwner:                 sql.NullString{String: event.Aggregate().ResourceOwner, Valid: event.Aggregate().ResourceOwner != ""},
+		InstanceID:    event.Aggregate().InstanceID,
+		ID:            "",
+		Seq:           0,
+		CreationDate:  time.Time{},
+		Typ:           event.Type(),
+		Data:          data,
+		EditorUser:    event.Creator(),
+		Version:       event.Aggregate().Version,
+		AggregateID:   event.Aggregate().ID,
+		AggregateType: event.Aggregate().Type,
+		ResourceOwner: sql.NullString{String: event.Aggregate().ResourceOwner, Valid: event.Aggregate().ResourceOwner != ""},
+		Constraints:   event.UniqueConstraints(),
 	}
 }
 
 func eventFromEventPusherWithInstanceID(instanceID string, event eventstore.Command) *repository.Event {
 	data, _ := eventstore.EventData(event)
 	return &repository.Event{
-		ID:                            "",
-		Sequence:                      0,
-		PreviousAggregateSequence:     0,
-		PreviousAggregateTypeSequence: 0,
-		CreationDate:                  time.Time{},
-		Type:                          repository.EventType(event.Type()),
-		Data:                          data,
-		EditorService:                 event.EditorService(),
-		EditorUser:                    event.EditorUser(),
-		Version:                       repository.Version(event.Aggregate().Version),
-		AggregateID:                   event.Aggregate().ID,
-		AggregateType:                 repository.AggregateType(event.Aggregate().Type),
-		ResourceOwner:                 sql.NullString{String: event.Aggregate().ResourceOwner, Valid: event.Aggregate().ResourceOwner != ""},
-		InstanceID:                    instanceID,
+		ID:            "",
+		Seq:           0,
+		CreationDate:  time.Time{},
+		Typ:           event.Type(),
+		Data:          data,
+		EditorUser:    event.Creator(),
+		Version:       event.Aggregate().Version,
+		AggregateID:   event.Aggregate().ID,
+		AggregateType: event.Aggregate().Type,
+		ResourceOwner: sql.NullString{String: event.Aggregate().ResourceOwner, Valid: event.Aggregate().ResourceOwner != ""},
+		InstanceID:    instanceID,
 	}
 }
 
@@ -218,23 +160,6 @@ func eventFromEventPusherWithCreationDateNow(event eventstore.Command) *reposito
 	e := eventFromEventPusher(event)
 	e.CreationDate = time.Now()
 	return e
-}
-
-func uniqueConstraintsFromEventConstraint(constraint *eventstore.EventUniqueConstraint) *repository.UniqueConstraint {
-	return &repository.UniqueConstraint{
-		UniqueType:   constraint.UniqueType,
-		UniqueField:  constraint.UniqueField,
-		ErrorMessage: constraint.ErrorMessage,
-		Action:       repository.UniqueConstraintAction(constraint.Action)}
-}
-
-func uniqueConstraintsFromEventConstraintWithInstanceID(instanceID string, constraint *eventstore.EventUniqueConstraint) *repository.UniqueConstraint {
-	return &repository.UniqueConstraint{
-		InstanceID:   instanceID,
-		UniqueType:   constraint.UniqueType,
-		UniqueField:  constraint.UniqueField,
-		ErrorMessage: constraint.ErrorMessage,
-		Action:       repository.UniqueConstraintAction(constraint.Action)}
 }
 
 func GetMockSecretGenerator(t *testing.T) crypto.Generator {
@@ -250,6 +175,14 @@ func GetMockSecretGenerator(t *testing.T) crypto.Generator {
 }
 
 type mockInstance struct{}
+
+func (m *mockInstance) Block() *bool {
+	panic("shouldn't be called here")
+}
+
+func (m *mockInstance) AuditLogRetention() *time.Duration {
+	panic("shouldn't be called here")
+}
 
 func (m *mockInstance) InstanceID() string {
 	return "INSTANCE"
@@ -268,23 +201,23 @@ func (m *mockInstance) ConsoleApplicationID() string {
 }
 
 func (m *mockInstance) DefaultLanguage() language.Tag {
-	return language.English
+	return AllowedLanguage
 }
 
 func (m *mockInstance) DefaultOrganisationID() string {
 	return "defaultOrgID"
 }
 
-func (m *mockInstance) RequestedDomain() string {
-	return "zitadel.cloud"
-}
-
-func (m *mockInstance) RequestedHost() string {
-	return "zitadel.cloud:443"
-}
-
 func (m *mockInstance) SecurityPolicyAllowedOrigins() []string {
 	return nil
+}
+
+func (m *mockInstance) EnableImpersonation() bool {
+	return false
+}
+
+func (m *mockInstance) Features() feature.Features {
+	return feature.Features{}
 }
 
 func newMockPermissionCheckAllowed() domain.PermissionCheck {
@@ -295,7 +228,36 @@ func newMockPermissionCheckAllowed() domain.PermissionCheck {
 
 func newMockPermissionCheckNotAllowed() domain.PermissionCheck {
 	return func(ctx context.Context, permission, orgID, resourceID string) (err error) {
-		return errors.ThrowPermissionDenied(nil, "AUTHZ-HKJD33", "Errors.PermissionDenied")
+		return zerrors.ThrowPermissionDenied(nil, "AUTHZ-HKJD33", "Errors.PermissionDenied")
+	}
+}
+
+func newMockProjectPermissionCheckAllowed() domain.ProjectPermissionCheck {
+	return func(ctx context.Context, clientID, userID string) (err error) {
+		return nil
+	}
+}
+
+func newMockProjectPermissionCheckOIDCNotAllowed() domain.ProjectPermissionCheck {
+	return func(ctx context.Context, clientID, userID string) (err error) {
+		return zerrors.ThrowPermissionDenied(nil, "OIDC-foSyH49RvL", "Errors.PermissionDenied")
+	}
+}
+
+func newMockProjectPermissionCheckSAMLNotAllowed() domain.ProjectPermissionCheck {
+	return func(ctx context.Context, clientID, userID string) (err error) {
+		return zerrors.ThrowPermissionDenied(nil, "SAML-foSyH49RvL", "Errors.PermissionDenied")
+	}
+}
+
+func newMockTokenVerifierValid() func(ctx context.Context, sessionToken, sessionID, tokenID string) (err error) {
+	return func(ctx context.Context, sessionToken, sessionID, tokenID string) (err error) {
+		return nil
+	}
+}
+func newMockTokenVerifierInvalid() func(ctx context.Context, sessionToken, sessionID, tokenID string) (err error) {
+	return func(ctx context.Context, sessionToken, sessionID, tokenID string) (err error) {
+		return zerrors.ThrowPermissionDenied(nil, "COMMAND-sGr42", "Errors.Session.Token.Invalid")
 	}
 }
 
@@ -327,8 +289,8 @@ func (h plainHasher) Verify(encoded, password string) (verifier.Result, error) {
 //
 // With `x` set to "foo", the following encoded string would be produced by Hash:
 // $plain$foo$password
-func mockPasswordHasher(x string) *crypto.PasswordHasher {
-	return &crypto.PasswordHasher{
+func mockPasswordHasher(x string) *crypto.Hasher {
+	return &crypto.Hasher{
 		Swapper:  passwap.NewSwapper(plainHasher{x: x}),
 		Prefixes: []string{"$plain$"},
 	}

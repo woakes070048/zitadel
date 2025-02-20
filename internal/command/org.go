@@ -5,13 +5,15 @@ import (
 	"strings"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	http_util "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/project"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 // InstanceOrgSetup is used for the first organisation in the instance setup.
@@ -63,7 +65,7 @@ type CreatedOrgAdmin struct {
 }
 
 func (c *Commands) setUpOrgWithIDs(ctx context.Context, o *OrgSetup, orgID string, allowInitialMail bool, userIDs ...string) (_ *CreatedOrg, err error) {
-	cmds := c.newOrgSetupCommands(ctx, orgID, o, userIDs)
+	cmds := c.newOrgSetupCommands(ctx, orgID, o)
 	for _, admin := range o.Admins {
 		if err = cmds.setupOrgAdmin(admin, allowInitialMail); err != nil {
 			return nil, err
@@ -76,10 +78,10 @@ func (c *Commands) setUpOrgWithIDs(ctx context.Context, o *OrgSetup, orgID strin
 	return cmds.push(ctx)
 }
 
-func (c *Commands) newOrgSetupCommands(ctx context.Context, orgID string, orgSetup *OrgSetup, userIDs []string) *orgSetupCommands {
+func (c *Commands) newOrgSetupCommands(ctx context.Context, orgID string, orgSetup *OrgSetup) *orgSetupCommands {
 	orgAgg := org.NewAggregate(orgID)
 	validations := []preparation.Validation{
-		AddOrgCommand(ctx, orgAgg, orgSetup.Name, userIDs...),
+		AddOrgCommand(ctx, orgAgg, orgSetup.Name),
 	}
 	return &orgSetupCommands{
 		validations: validations,
@@ -94,16 +96,24 @@ func (c *orgSetupCommands) setupOrgAdmin(admin *OrgSetupAdmin, allowInitialMail 
 		c.validations = append(c.validations, c.commands.AddOrgMemberCommand(c.aggregate, admin.ID, orgAdminRoles(admin.Roles)...))
 		return nil
 	}
-	userID, err := c.commands.idGenerator.Next()
-	if err != nil {
-		return err
+
+	var userID string
+	if admin.Human != nil && admin.Human.ID != "" {
+		userID = admin.Human.ID
+	} else {
+		var err error
+		userID, err = c.commands.idGenerator.Next()
+		if err != nil {
+			return err
+		}
 	}
+
 	if admin.Human != nil {
 		admin.Human.ID = userID
 		c.validations = append(c.validations, c.commands.AddHumanCommand(admin.Human, c.aggregate.ID, c.commands.userPasswordHasher, c.commands.userEncryption, allowInitialMail))
 	} else if admin.Machine != nil {
 		admin.Machine.Machine.AggregateID = userID
-		if err = c.setupOrgAdminMachine(c.aggregate, admin.Machine); err != nil {
+		if err := c.setupOrgAdminMachine(c.aggregate, admin.Machine); err != nil {
 			return err
 		}
 	}
@@ -167,7 +177,7 @@ func (c *orgSetupCommands) push(ctx context.Context) (_ *CreatedOrg, err error) 
 	return &CreatedOrg{
 		ObjectDetails: &domain.ObjectDetails{
 			Sequence:      events[len(events)-1].Sequence(),
-			EventDate:     events[len(events)-1].CreationDate(),
+			EventDate:     events[len(events)-1].CreatedAt(),
 			ResourceOwner: c.aggregate.ID,
 		},
 		CreatedAdmins: c.createdAdmins(),
@@ -177,7 +187,7 @@ func (c *orgSetupCommands) push(ctx context.Context) (_ *CreatedOrg, err error) 
 func (c *orgSetupCommands) createdAdmins() []*CreatedOrgAdmin {
 	users := make([]*CreatedOrgAdmin, 0, len(c.admins))
 	for _, admin := range c.admins {
-		if admin.ID != "" {
+		if admin.ID != "" && admin.Human == nil {
 			continue
 		}
 		if admin.Human != nil {
@@ -233,12 +243,15 @@ func (c *Commands) SetUpOrg(ctx context.Context, o *OrgSetup, allowInitialMail b
 
 // AddOrgCommand defines the commands to create a new org,
 // this includes the verified default domain
-func AddOrgCommand(ctx context.Context, a *org.Aggregate, name string, userIDs ...string) preparation.Validation {
+func AddOrgCommand(ctx context.Context, a *org.Aggregate, name string) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if name = strings.TrimSpace(name); name == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "ORG-mruNY", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "ORG-mruNY", "Errors.Invalid.Argument")
 		}
-		defaultDomain := domain.NewIAMDomainName(name, authz.GetInstance(ctx).RequestedDomain())
+		defaultDomain, err := domain.NewIAMDomainName(name, http_util.DomainContext(ctx).RequestedDomain())
+		if err != nil {
+			return nil, err
+		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			return []eventstore.Command{
 				org.NewOrgAddedEvent(ctx, &a.Aggregate, name),
@@ -256,7 +269,7 @@ func (c *Commands) getOrg(ctx context.Context, orgID string) (*domain.Org, error
 		return nil, err
 	}
 	if !isOrgStateExists(writeModel.State) {
-		return nil, errors.ThrowInternal(err, "COMMAND-4M9sf", "Errors.Org.NotFound")
+		return nil, zerrors.ThrowInternal(err, "COMMAND-4M9sf", "Errors.Org.NotFound")
 	}
 	return orgWriteModelToOrg(writeModel), nil
 }
@@ -267,18 +280,21 @@ func (c *Commands) checkOrgExists(ctx context.Context, orgID string) error {
 		return err
 	}
 	if !isOrgStateExists(orgWriteModel.State) {
-		return errors.ThrowPreconditionFailed(nil, "COMMAND-QXPGs", "Errors.Org.NotFound")
+		return zerrors.ThrowPreconditionFailed(nil, "COMMAND-QXPGs", "Errors.Org.NotFound")
 	}
 	return nil
 }
 
-func (c *Commands) AddOrgWithID(ctx context.Context, name, userID, resourceOwner, orgID string, claimedUserIDs []string) (*domain.Org, error) {
+func (c *Commands) AddOrgWithID(ctx context.Context, name, userID, resourceOwner, orgID string, claimedUserIDs []string) (_ *domain.Org, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	existingOrg, err := c.getOrgWriteModelByID(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
 	if existingOrg.State != domain.OrgStateUnspecified {
-		return nil, errors.ThrowNotFound(nil, "ORG-lapo2m", "Errors.Org.AlreadyExisting")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-lapo2m", "Errors.Org.AlreadyExisting")
 	}
 
 	return c.addOrgWithIDAndMember(ctx, name, userID, resourceOwner, orgID, claimedUserIDs)
@@ -286,18 +302,21 @@ func (c *Commands) AddOrgWithID(ctx context.Context, name, userID, resourceOwner
 
 func (c *Commands) AddOrg(ctx context.Context, name, userID, resourceOwner string, claimedUserIDs []string) (*domain.Org, error) {
 	if name = strings.TrimSpace(name); name == "" {
-		return nil, errors.ThrowInvalidArgument(nil, "EVENT-Mf9sd", "Errors.Org.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "EVENT-Mf9sd", "Errors.Org.Invalid")
 	}
 
 	orgID, err := c.idGenerator.Next()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "COMMA-OwciI", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "COMMA-OwciI", "Errors.Internal")
 	}
 
 	return c.addOrgWithIDAndMember(ctx, name, userID, resourceOwner, orgID, claimedUserIDs)
 }
 
-func (c *Commands) addOrgWithIDAndMember(ctx context.Context, name, userID, resourceOwner, orgID string, claimedUserIDs []string) (*domain.Org, error) {
+func (c *Commands) addOrgWithIDAndMember(ctx context.Context, name, userID, resourceOwner, orgID string, claimedUserIDs []string) (_ *domain.Org, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	orgAgg, addedOrg, events, err := c.addOrgWithID(ctx, &domain.Org{Name: name}, orgID, claimedUserIDs)
 	if err != nil {
 		return nil, err
@@ -326,7 +345,7 @@ func (c *Commands) addOrgWithIDAndMember(ctx context.Context, name, userID, reso
 func (c *Commands) ChangeOrg(ctx context.Context, orgID, name string) (*domain.ObjectDetails, error) {
 	name = strings.TrimSpace(name)
 	if orgID == "" || name == "" {
-		return nil, errors.ThrowInvalidArgument(nil, "EVENT-Mf9sd", "Errors.Org.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "EVENT-Mf9sd", "Errors.Org.Invalid")
 	}
 
 	orgWriteModel, err := c.getOrgWriteModelByID(ctx, orgID)
@@ -334,10 +353,10 @@ func (c *Commands) ChangeOrg(ctx context.Context, orgID, name string) (*domain.O
 		return nil, err
 	}
 	if !isOrgStateExists(orgWriteModel.State) {
-		return nil, errors.ThrowNotFound(nil, "ORG-1MRds", "Errors.Org.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-1MRds", "Errors.Org.NotFound")
 	}
 	if orgWriteModel.Name == name {
-		return nil, errors.ThrowPreconditionFailed(nil, "ORG-4VSdf", "Errors.Org.NotChanged")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "ORG-4VSdf", "Errors.Org.NotChanged")
 	}
 	orgAgg := OrgAggregateFromWriteModel(&orgWriteModel.WriteModel)
 	events := make([]eventstore.Command, 0)
@@ -366,10 +385,10 @@ func (c *Commands) DeactivateOrg(ctx context.Context, orgID string) (*domain.Obj
 		return nil, err
 	}
 	if !isOrgStateExists(orgWriteModel.State) {
-		return nil, errors.ThrowNotFound(nil, "ORG-oL9nT", "Errors.Org.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-oL9nT", "Errors.Org.NotFound")
 	}
 	if orgWriteModel.State == domain.OrgStateInactive {
-		return nil, errors.ThrowPreconditionFailed(nil, "EVENT-Dbs2g", "Errors.Org.AlreadyDeactivated")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "EVENT-Dbs2g", "Errors.Org.AlreadyDeactivated")
 	}
 	orgAgg := OrgAggregateFromWriteModel(&orgWriteModel.WriteModel)
 	pushedEvents, err := c.eventstore.Push(ctx, org.NewOrgDeactivatedEvent(ctx, orgAgg))
@@ -389,10 +408,10 @@ func (c *Commands) ReactivateOrg(ctx context.Context, orgID string) (*domain.Obj
 		return nil, err
 	}
 	if !isOrgStateExists(orgWriteModel.State) {
-		return nil, errors.ThrowNotFound(nil, "ORG-Dgf3g", "Errors.Org.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-Dgf3g", "Errors.Org.NotFound")
 	}
 	if orgWriteModel.State == domain.OrgStateActive {
-		return nil, errors.ThrowPreconditionFailed(nil, "EVENT-bfnrh", "Errors.Org.AlreadyActive")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "EVENT-bfnrh", "Errors.Org.AlreadyActive")
 	}
 	orgAgg := OrgAggregateFromWriteModel(&orgWriteModel.WriteModel)
 	pushedEvents, err := c.eventstore.Push(ctx, org.NewOrgReactivatedEvent(ctx, orgAgg))
@@ -421,7 +440,7 @@ func (c *Commands) RemoveOrg(ctx context.Context, id string) (*domain.ObjectDeta
 
 	return &domain.ObjectDetails{
 		Sequence:      events[len(events)-1].Sequence(),
-		EventDate:     events[len(events)-1].CreationDate(),
+		EventDate:     events[len(events)-1].CreatedAt(),
 		ResourceOwner: events[len(events)-1].Aggregate().InstanceID,
 	}, nil
 }
@@ -431,26 +450,27 @@ func (c *Commands) prepareRemoveOrg(a *org.Aggregate) preparation.Validation {
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			instance := authz.GetInstance(ctx)
 			if a.ID == instance.DefaultOrganisationID() {
-				return nil, errors.ThrowPreconditionFailed(nil, "COMMA-wG9p1", "Errors.Org.DefaultOrgNotDeletable")
+				return nil, zerrors.ThrowPreconditionFailed(nil, "COMMA-wG9p1", "Errors.Org.DefaultOrgNotDeletable")
 			}
+
 			err := c.checkProjectExists(ctx, instance.ProjectID(), a.ID)
 			// if there is no error, the ZITADEL project was found on the org to be deleted
 			if err == nil {
-				return nil, errors.ThrowPreconditionFailed(err, "COMMA-AF3JW", "Errors.Org.ZitadelOrgNotDeletable")
+				return nil, zerrors.ThrowPreconditionFailed(err, "COMMA-AF3JW", "Errors.Org.ZitadelOrgNotDeletable")
 			}
 			// "precondition failed" error means the project does not exist, return other errors
-			if !errors.IsPreconditionFailed(err) {
+			if !zerrors.IsPreconditionFailed(err) {
 				return nil, err
 			}
 			writeModel, err := c.getOrgWriteModelByID(ctx, a.ID)
 			if err != nil {
-				return nil, errors.ThrowPreconditionFailed(err, "COMMA-wG9p1", "Errors.Org.NotFound")
+				return nil, zerrors.ThrowPreconditionFailed(err, "COMMA-wG9p1", "Errors.Org.NotFound")
 			}
 			if !isOrgStateExists(writeModel.State) {
-				return nil, errors.ThrowNotFound(nil, "COMMA-aps2n", "Errors.Org.NotFound")
+				return nil, zerrors.ThrowNotFound(nil, "COMMA-aps2n", "Errors.Org.NotFound")
 			}
 
-			domainPolicy, err := c.getOrgDomainPolicy(ctx, a.ID)
+			domainPolicy, err := c.domainPolicyWriteModel(ctx, a.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -693,11 +713,11 @@ func ExistsOrg(ctx context.Context, filter preparation.FilterToQueryReducer, id 
 
 func (c *Commands) addOrgWithID(ctx context.Context, organisation *domain.Org, orgID string, claimedUserIDs []string) (_ *eventstore.Aggregate, _ *OrgWriteModel, _ []eventstore.Command, err error) {
 	if !organisation.IsValid() {
-		return nil, nil, nil, errors.ThrowInvalidArgument(nil, "COMM-deLSk", "Errors.Org.Invalid")
+		return nil, nil, nil, zerrors.ThrowInvalidArgument(nil, "COMM-deLSk", "Errors.Org.Invalid")
 	}
 
 	organisation.AggregateID = orgID
-	organisation.AddIAMDomain(authz.GetInstance(ctx).RequestedDomain())
+	organisation.AddIAMDomain(http_util.DomainContext(ctx).RequestedDomain())
 	addedOrg := NewOrgWriteModel(organisation.AggregateID)
 
 	orgAgg := OrgAggregateFromWriteModel(&addedOrg.WriteModel)
@@ -714,9 +734,12 @@ func (c *Commands) addOrgWithID(ctx context.Context, organisation *domain.Org, o
 	return orgAgg, addedOrg, events, nil
 }
 
-func (c *Commands) getOrgWriteModelByID(ctx context.Context, orgID string) (*OrgWriteModel, error) {
+func (c *Commands) getOrgWriteModelByID(ctx context.Context, orgID string) (_ *OrgWriteModel, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	orgWriteModel := NewOrgWriteModel(orgID)
-	err := c.eventstore.FilterToQueryReducer(ctx, orgWriteModel)
+	err = c.eventstore.FilterToQueryReducer(ctx, orgWriteModel)
 	if err != nil {
 		return nil, err
 	}

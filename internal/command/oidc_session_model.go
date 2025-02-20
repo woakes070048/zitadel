@@ -3,26 +3,34 @@ package command
 import (
 	"time"
 
+	"golang.org/x/text/language"
+
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/oidcsession"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type OIDCSessionWriteModel struct {
 	eventstore.WriteModel
 
 	UserID                     string
+	UserResourceOwner          string
+	PreferredLanguage          *language.Tag
 	SessionID                  string
 	ClientID                   string
 	Audience                   []string
 	Scope                      []string
 	AuthMethods                []domain.UserAuthMethodType
 	AuthTime                   time.Time
+	Nonce                      string
+	UserAgent                  *domain.UserAgent
 	State                      domain.OIDCSessionState
 	AccessTokenID              string
 	AccessTokenCreation        time.Time
 	AccessTokenExpiration      time.Time
+	AccessTokenReason          domain.TokenReason
+	AccessTokenActor           *domain.TokenActor
 	RefreshTokenID             string
 	RefreshToken               string
 	RefreshTokenExpiration     time.Time
@@ -83,12 +91,16 @@ func (wm *OIDCSessionWriteModel) Query() *eventstore.SearchQueryBuilder {
 
 func (wm *OIDCSessionWriteModel) reduceAdded(e *oidcsession.AddedEvent) {
 	wm.UserID = e.UserID
+	wm.UserResourceOwner = e.UserResourceOwner
 	wm.SessionID = e.SessionID
 	wm.ClientID = e.ClientID
 	wm.Audience = e.Audience
 	wm.Scope = e.Scope
 	wm.AuthMethods = e.AuthMethods
 	wm.AuthTime = e.AuthTime
+	wm.Nonce = e.Nonce
+	wm.PreferredLanguage = e.PreferredLanguage
+	wm.UserAgent = e.UserAgent
 	wm.State = domain.OIDCSessionStateActive
 	// the write model might be initialized without resource owner,
 	// so update the aggregate
@@ -100,6 +112,8 @@ func (wm *OIDCSessionWriteModel) reduceAdded(e *oidcsession.AddedEvent) {
 func (wm *OIDCSessionWriteModel) reduceAccessTokenAdded(e *oidcsession.AccessTokenAddedEvent) {
 	wm.AccessTokenID = e.ID
 	wm.AccessTokenExpiration = e.CreationDate().Add(e.Lifetime)
+	wm.AccessTokenReason = e.Reason
+	wm.AccessTokenActor = e.Actor
 }
 
 func (wm *OIDCSessionWriteModel) reduceAccessTokenRevoked(e *oidcsession.AccessTokenRevokedEvent) {
@@ -128,27 +142,27 @@ func (wm *OIDCSessionWriteModel) reduceRefreshTokenRevoked(e *oidcsession.Refres
 
 func (wm *OIDCSessionWriteModel) CheckRefreshToken(refreshTokenID string) error {
 	if wm.State != domain.OIDCSessionStateActive {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-s3hjk", "Errors.OIDCSession.RefreshTokenInvalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-s3hjk", "Errors.OIDCSession.RefreshTokenInvalid")
 	}
 	if wm.RefreshTokenID != refreshTokenID {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-28ubl", "Errors.OIDCSession.RefreshTokenInvalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-28ubl", "Errors.OIDCSession.RefreshTokenInvalid")
 	}
 	now := time.Now()
 	if wm.RefreshTokenExpiration.Before(now) || wm.RefreshTokenIdleExpiration.Before(now) {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-3jt2w", "Errors.OIDCSession.RefreshTokenInvalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-3jt2w", "Errors.OIDCSession.RefreshTokenInvalid")
 	}
 	return nil
 }
 
 func (wm *OIDCSessionWriteModel) CheckAccessToken(accessTokenID string) error {
 	if wm.State != domain.OIDCSessionStateActive {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-KL2pk", "Errors.OIDCSession.Token.Invalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-KL2pk", "Errors.OIDCSession.Token.Invalid")
 	}
 	if wm.AccessTokenID != accessTokenID {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-JLKW2", "Errors.OIDCSession.Token.Invalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-JLKW2", "Errors.OIDCSession.Token.Invalid")
 	}
 	if wm.AccessTokenExpiration.Before(time.Now()) {
-		return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-3j3md", "Errors.OIDCSession.Token.Invalid")
+		return zerrors.ThrowPreconditionFailed(nil, "OIDCS-3j3md", "Errors.OIDCSession.Token.Invalid")
 	}
 	return nil
 }
@@ -159,7 +173,7 @@ func (wm *OIDCSessionWriteModel) CheckClient(clientID string) error {
 			return nil
 		}
 	}
-	return caos_errs.ThrowPreconditionFailed(nil, "OIDCS-SKjl3", "Errors.OIDCSession.InvalidClient")
+	return zerrors.ThrowPreconditionFailed(nil, "OIDCS-SKjl3", "Errors.OIDCSession.InvalidClient")
 }
 
 func (wm *OIDCSessionWriteModel) OIDCRefreshTokenID(refreshTokenID string) string {

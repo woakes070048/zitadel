@@ -4,12 +4,16 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func (c *Commands) SetUserMetadata(ctx context.Context, metadata *domain.Metadata, userID, resourceOwner string) (_ *domain.Metadata, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	err = c.checkUserExists(ctx, userID, resourceOwner)
 	if err != nil {
 		return nil, err
@@ -34,7 +38,7 @@ func (c *Commands) SetUserMetadata(ctx context.Context, metadata *domain.Metadat
 
 func (c *Commands) BulkSetUserMetadata(ctx context.Context, userID, resourceOwner string, metadatas ...*domain.Metadata) (_ *domain.ObjectDetails, err error) {
 	if len(metadatas) == 0 {
-		return nil, caos_errs.ThrowPreconditionFailed(nil, "META-9mm2d", "Errors.Metadata.NoData")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "META-9mm2d", "Errors.Metadata.NoData")
 	}
 	err = c.checkUserExists(ctx, userID, resourceOwner)
 	if err != nil {
@@ -66,7 +70,7 @@ func (c *Commands) BulkSetUserMetadata(ctx context.Context, userID, resourceOwne
 
 func (c *Commands) setUserMetadata(ctx context.Context, userAgg *eventstore.Aggregate, metadata *domain.Metadata) (command eventstore.Command, err error) {
 	if !metadata.IsValid() {
-		return nil, caos_errs.ThrowInvalidArgument(nil, "META-2m00f", "Errors.Metadata.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "META-2m00f", "Errors.Metadata.Invalid")
 	}
 	return user.NewMetadataSetEvent(
 		ctx,
@@ -78,7 +82,7 @@ func (c *Commands) setUserMetadata(ctx context.Context, userAgg *eventstore.Aggr
 
 func (c *Commands) RemoveUserMetadata(ctx context.Context, metadataKey, userID, resourceOwner string) (_ *domain.ObjectDetails, err error) {
 	if metadataKey == "" {
-		return nil, caos_errs.ThrowInvalidArgument(nil, "META-2n0fs", "Errors.Metadata.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "META-2n0fs", "Errors.Metadata.Invalid")
 	}
 	err = c.checkUserExists(ctx, userID, resourceOwner)
 	if err != nil {
@@ -89,7 +93,7 @@ func (c *Commands) RemoveUserMetadata(ctx context.Context, metadataKey, userID, 
 		return nil, err
 	}
 	if !removeMetadata.State.Exists() {
-		return nil, caos_errs.ThrowNotFound(nil, "META-ncnw3", "Errors.Metadata.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "META-ncnw3", "Errors.Metadata.NotFound")
 	}
 	userAgg := UserAggregateFromWriteModel(&removeMetadata.WriteModel)
 	event, err := c.removeUserMetadata(ctx, userAgg, metadataKey)
@@ -110,7 +114,7 @@ func (c *Commands) RemoveUserMetadata(ctx context.Context, metadataKey, userID, 
 
 func (c *Commands) BulkRemoveUserMetadata(ctx context.Context, userID, resourceOwner string, metadataKeys ...string) (_ *domain.ObjectDetails, err error) {
 	if len(metadataKeys) == 0 {
-		return nil, caos_errs.ThrowPreconditionFailed(nil, "META-9mm2d", "Errors.Metadata.NoData")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "META-9mm2d", "Errors.Metadata.NoData")
 	}
 	err = c.checkUserExists(ctx, userID, resourceOwner)
 	if err != nil {
@@ -125,10 +129,10 @@ func (c *Commands) BulkRemoveUserMetadata(ctx context.Context, userID, resourceO
 	userAgg := UserAggregateFromWriteModel(&removeMetadata.WriteModel)
 	for i, key := range metadataKeys {
 		if key == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "COMMAND-m29ds", "Errors.Metadata.Invalid")
+			return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-m29ds", "Errors.Metadata.Invalid")
 		}
 		if _, found := removeMetadata.metadataList[key]; !found {
-			return nil, caos_errs.ThrowNotFound(nil, "META-2nnds", "Errors.Metadata.KeyNotExisting")
+			return nil, zerrors.ThrowNotFound(nil, "META-2nnds", "Errors.Metadata.KeyNotExisting")
 		}
 		event, err := c.removeUserMetadata(ctx, userAgg, key)
 		if err != nil {

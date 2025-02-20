@@ -2,252 +2,476 @@ package handler
 
 import (
 	"context"
+	"slices"
+	"time"
 
-	"github.com/zitadel/logging"
-
+	auth_view "github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/view"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	v1 "github.com/zitadel/zitadel/internal/eventstore/v1"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/query"
-	es_sdk "github.com/zitadel/zitadel/internal/eventstore/v1/sdk"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/spooler"
-	org_model "github.com/zitadel/zitadel/internal/org/model"
-	org_es_model "github.com/zitadel/zitadel/internal/org/repository/eventsourcing/model"
-	"github.com/zitadel/zitadel/internal/org/repository/view"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	"github.com/zitadel/zitadel/internal/id"
 	query2 "github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	es_model "github.com/zitadel/zitadel/internal/user/repository/eventsourcing/model"
 	view_model "github.com/zitadel/zitadel/internal/user/repository/view/model"
 )
 
 const (
 	userSessionTable = "auth.user_sessions"
+
+	IDPrefixV1 = "V1_"
 )
 
 type UserSession struct {
-	handler
-	subscription *v1.Subscription
-	queries      *query2.Queries
+	queries     *query2.Queries
+	view        *auth_view.View
+	es          handler.EventStore
+	idGenerator id.Generator
 }
 
-func newUserSession(ctx context.Context, handler handler, queries *query2.Queries) *UserSession {
-	h := &UserSession{
-		handler: handler,
-		queries: queries,
-	}
+var _ handler.Projection = (*UserSession)(nil)
 
-	h.subscribe(ctx)
-
-	return h
+func newUserSession(
+	ctx context.Context,
+	config handler.Config,
+	view *auth_view.View,
+	queries *query2.Queries,
+	idGenerator id.Generator,
+) *handler.Handler {
+	return handler.NewHandler(
+		ctx,
+		&config,
+		&UserSession{
+			queries:     queries,
+			view:        view,
+			es:          config.Eventstore,
+			idGenerator: idGenerator,
+		},
+	)
 }
 
-func (u *UserSession) subscribe(ctx context.Context) {
-	u.subscription = u.es.Subscribe(u.AggregateTypes()...)
-	go func() {
-		for event := range u.subscription.Events {
-			query.ReduceEvent(ctx, u, event)
-		}
-	}()
-}
-
-func (u *UserSession) ViewModel() string {
+// Name implements [handler.Projection]
+func (*UserSession) Name() string {
 	return userSessionTable
 }
 
-func (u *UserSession) Subscription() *v1.Subscription {
-	return u.subscription
-}
-
-func (_ *UserSession) AggregateTypes() []models.AggregateType {
-	return []models.AggregateType{user.AggregateType, org.AggregateType, instance.AggregateType}
-}
-
-func (u *UserSession) CurrentSequence(ctx context.Context, instanceID string) (uint64, error) {
-	sequence, err := u.view.GetLatestUserSessionSequence(ctx, instanceID)
-	if err != nil {
-		return 0, err
-	}
-	return sequence.CurrentSequence, nil
-}
-
-func (u *UserSession) EventQuery(ctx context.Context, instanceIDs []string) (*models.SearchQuery, error) {
-	sequences, err := u.view.GetLatestUserSessionSequences(ctx, instanceIDs)
-	if err != nil {
-		return nil, err
-	}
-	return newSearchQuery(sequences, u.AggregateTypes(), instanceIDs), nil
-}
-
-func (u *UserSession) Reduce(event *models.Event) (err error) {
-	var session *view_model.UserSessionView
-	switch eventstore.EventType(event.Type) {
-	case user.UserV1PasswordCheckSucceededType,
-		user.UserV1PasswordCheckFailedType,
-		user.UserV1MFAOTPCheckSucceededType,
-		user.UserV1MFAOTPCheckFailedType,
-		user.UserV1SignedOutType,
-		user.HumanPasswordCheckSucceededType,
-		user.HumanPasswordCheckFailedType,
-		user.UserIDPLoginCheckSucceededType,
-		user.HumanMFAOTPCheckSucceededType,
-		user.HumanMFAOTPCheckFailedType,
-		user.HumanU2FTokenCheckSucceededType,
-		user.HumanU2FTokenCheckFailedType,
-		user.HumanPasswordlessTokenCheckSucceededType,
-		user.HumanPasswordlessTokenCheckFailedType,
-		user.HumanSignedOutType:
-		eventData, err := view_model.UserSessionFromEvent(event)
-		if err != nil {
-			return err
-		}
-		session, err = u.view.UserSessionByIDs(eventData.UserAgentID, event.AggregateID, event.InstanceID)
-		if err != nil {
-			if !errors.IsNotFound(err) {
-				return err
-			}
-			session = &view_model.UserSessionView{
-				CreationDate:  event.CreationDate,
-				ResourceOwner: event.ResourceOwner,
-				UserAgentID:   eventData.UserAgentID,
-				UserID:        event.AggregateID,
-				State:         int32(domain.UserSessionStateActive),
-				InstanceID:    event.InstanceID,
-			}
-		}
-		return u.updateSession(session, event)
-	case user.UserV1PasswordChangedType,
-		user.UserV1MFAOTPRemovedType,
-		user.UserV1ProfileChangedType,
-		user.UserLockedType,
-		user.UserDeactivatedType,
-		user.HumanPasswordChangedType,
-		user.HumanMFAOTPRemovedType,
-		user.HumanProfileChangedType,
-		user.HumanAvatarAddedType,
-		user.HumanAvatarRemovedType,
-		user.UserDomainClaimedType,
-		user.UserUserNameChangedType,
-		user.UserIDPLinkRemovedType,
-		user.UserIDPLinkCascadeRemovedType,
-		user.HumanPasswordlessTokenRemovedType,
-		user.HumanU2FTokenRemovedType:
-		sessions, err := u.view.UserSessionsByUserID(event.AggregateID, event.InstanceID)
-		if err != nil {
-			return err
-		}
-		if len(sessions) == 0 {
-			return u.view.ProcessedUserSessionSequence(event)
-		}
-		for _, session := range sessions {
-			if err := session.AppendEvent(event); err != nil {
-				return err
-			}
-			if err := u.fillUserInfo(session); err != nil {
-				return err
-			}
-		}
-		return u.view.PutUserSessions(sessions, event)
-	case org.OrgDomainPrimarySetEventType:
-		return u.fillLoginNamesOnOrgUsers(event)
-	case user.UserRemovedType:
-		return u.view.DeleteUserSessions(event.AggregateID, event.InstanceID, event)
-	case instance.InstanceRemovedEventType:
-		return u.view.DeleteInstanceUserSessions(event)
-	case org.OrgRemovedEventType:
-		return u.view.DeleteOrgUserSessions(event)
-	default:
-		return u.view.ProcessedUserSessionSequence(event)
-	}
-}
-
-func (u *UserSession) OnError(event *models.Event, err error) error {
-	logging.WithFields("id", event.AggregateID).WithError(err).Warn("something went wrong in user session handler")
-	return spooler.HandleError(event, err, u.view.GetLatestUserSessionFailedEvent, u.view.ProcessedUserSessionFailedEvent, u.view.ProcessedUserSessionSequence, u.errorCountUntilSkip)
-}
-
-func (u *UserSession) OnSuccess(instanceIDs []string) error {
-	return spooler.HandleSuccess(u.view.UpdateUserSessionSpoolerRunTimestamp, instanceIDs)
-}
-
-func (u *UserSession) updateSession(session *view_model.UserSessionView, event *models.Event) error {
-	if err := session.AppendEvent(event); err != nil {
-		return err
-	}
-	if err := u.fillUserInfo(session); err != nil {
-		return err
-	}
-	return u.view.PutUserSession(session, event)
-}
-
-func (u *UserSession) fillUserInfo(session *view_model.UserSessionView) error {
-	user, err := u.view.UserByID(session.UserID, session.InstanceID)
-	if err != nil {
-		return err
-	}
-	session.UserName = user.UserName
-	session.LoginName = user.PreferredLoginName
-	session.DisplayName = user.DisplayName
-	session.AvatarKey = user.AvatarKey
-	return nil
-}
-
-func (u *UserSession) fillLoginNamesOnOrgUsers(event *models.Event) error {
-	sessions, err := u.view.UserSessionsByOrgID(event.ResourceOwner, event.InstanceID)
-	if err != nil {
-		return err
-	}
-	if len(sessions) == 0 {
-		return u.view.ProcessedUserSessionSequence(event)
-	}
-	userLoginMustBeDomain, primaryDomain, err := u.loginNameInformation(context.Background(), event.ResourceOwner, event.InstanceID)
-	if err != nil {
-		return err
-	}
-	if !userLoginMustBeDomain {
-		return nil
-	}
-	for _, session := range sessions {
-		session.LoginName = session.UserName + "@" + primaryDomain
-	}
-	return u.view.PutUserSessions(sessions, event)
-}
-
-func (u *UserSession) loginNameInformation(ctx context.Context, orgID string, instanceID string) (userLoginMustBeDomain bool, primaryDomain string, err error) {
-	org, err := u.getOrgByID(ctx, orgID, instanceID)
-	if err != nil {
-		return false, "", err
-	}
-	if org.DomainPolicy != nil {
-		return org.DomainPolicy.UserLoginMustBeDomain, org.GetPrimaryDomain().Domain, nil
-	}
-	policy, err := u.queries.DefaultDomainPolicy(withInstanceID(ctx, org.InstanceID))
-	if err != nil {
-		return false, "", err
-	}
-	return policy.UserLoginMustBeDomain, org.GetPrimaryDomain().Domain, nil
-}
-
-func (u *UserSession) getOrgByID(ctx context.Context, orgID, instanceID string) (*org_model.Org, error) {
-	orgQuery, err := view.OrgByIDQuery(orgID, instanceID, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	esOrg := &org_es_model.Org{
-		ObjectRoot: models.ObjectRoot{
-			AggregateID: orgID,
+// Reducers implements [handler.Projection]
+func (s *UserSession) Reducers() []handler.AggregateReducer {
+	return []handler.AggregateReducer{
+		{
+			Aggregate: user.AggregateType,
+			EventReducers: []handler.EventReducer{
+				{
+					Event:  user.UserV1PasswordCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1PasswordCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1MFAOTPCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1MFAOTPCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1SignedOutType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserIDPLoginCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanMFAOTPCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanMFAOTPCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanU2FTokenCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanU2FTokenCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordlessTokenCheckSucceededType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordlessTokenCheckFailedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanSignedOutType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1PasswordChangedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserV1MFAOTPRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserLockedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserDeactivatedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordChangedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanMFAOTPRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserIDPLinkRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserIDPLinkCascadeRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanPasswordlessTokenRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanU2FTokenRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.UserRemovedType,
+					Reduce: s.Reduce,
+				},
+				{
+					Event:  user.HumanRegisteredType,
+					Reduce: s.Reduce,
+				},
+			},
+		},
+		{
+			Aggregate: org.AggregateType,
+			EventReducers: []handler.EventReducer{
+				{
+					Event:  org.OrgRemovedEventType,
+					Reduce: s.Reduce,
+				},
+			},
+		},
+		{
+			Aggregate: instance.AggregateType,
+			EventReducers: []handler.EventReducer{
+				{
+					Event:  instance.InstanceRemovedEventType,
+					Reduce: s.Reduce,
+				},
+			},
 		},
 	}
-	err = es_sdk.Filter(ctx, u.Eventstore().FilterEvents, esOrg.AppendEvents, orgQuery)
-	if err != nil && !errors.IsNotFound(err) {
+}
+
+func (u *UserSession) sessionColumns(event eventstore.Event, columns ...handler.Column) ([]handler.Column, error) {
+	userAgent, err := agentIDFromSession(event)
+	if err != nil {
 		return nil, err
 	}
-	if esOrg.Sequence == 0 {
-		return nil, errors.ThrowNotFound(nil, "EVENT-3m9vs", "Errors.Org.NotFound")
-	}
+	return append([]handler.Column{
+		handler.NewCol(view_model.UserSessionKeyUserAgentID, userAgent),
+		handler.NewCol(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+		handler.NewCol(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+		handler.NewCol(view_model.UserSessionKeyCreationDate, handler.OnlySetValueOnInsert(userSessionTable, event.CreatedAt())),
+		handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+		handler.NewCol(view_model.UserSessionKeyResourceOwner, event.Aggregate().ResourceOwner),
+		handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+	}, columns...), nil
+}
 
-	return org_es_model.OrgToModel(esOrg), nil
+func (u *UserSession) sessionColumnsActivate(event eventstore.Event, columns ...handler.Column) ([]handler.Column, error) {
+	sessionID, err := u.idGenerator.Next()
+	if err != nil {
+		return nil, err
+	}
+	sessionID = IDPrefixV1 + sessionID
+	columns = slices.Grow(columns, 2)
+	columns = append(columns,
+		handler.NewCol(view_model.UserSessionKeyState, domain.UserSessionStateActive),
+		handler.NewCol(view_model.UserSessionKeyID,
+			handler.OnlySetValueInCase(userSessionTable, sessionID,
+				handler.ConditionOr(
+					handler.ColumnChangedCondition(userSessionTable, view_model.UserSessionKeyState, domain.UserSessionStateTerminated, domain.UserSessionStateActive),
+					handler.ColumnIsNullCondition(userSessionTable, view_model.UserSessionKeyID),
+				),
+			),
+		),
+	)
+	return u.sessionColumns(event, columns...)
+}
+
+func (u *UserSession) Reduce(event eventstore.Event) (_ *handler.Statement, err error) {
+	// in case anything needs to be change here check if appendEvent function needs the change as well
+	switch event.Type() {
+	case user.UserV1PasswordCheckSucceededType,
+		user.HumanPasswordCheckSucceededType:
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordVerification, event.CreatedAt()),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserV1PasswordCheckFailedType,
+		user.HumanPasswordCheckFailedType:
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordVerification, time.Time{}),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserV1MFAOTPCheckSucceededType,
+		user.HumanMFAOTPCheckSucceededType:
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerification, event.CreatedAt()),
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerificationType, domain.MFATypeTOTP),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserV1MFAOTPCheckFailedType,
+		user.HumanMFAOTPCheckFailedType,
+		user.HumanU2FTokenCheckFailedType:
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerification, time.Time{}),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserV1SignedOutType,
+		user.HumanSignedOutType:
+		columns, err := u.sessionColumns(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordlessVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeyPasswordVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerificationType, domain.MFALevelNotSetUp),
+			handler.NewCol(view_model.UserSessionKeyMultiFactorVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeyMultiFactorVerificationType, domain.MFALevelNotSetUp),
+			handler.NewCol(view_model.UserSessionKeyExternalLoginVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeyState, domain.UserSessionStateTerminated),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserIDPLoginCheckSucceededType:
+		data := new(es_model.AuthRequest)
+		err := data.SetData(event)
+		if err != nil {
+			return nil, err
+		}
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyExternalLoginVerification, event.CreatedAt()),
+			handler.NewCol(view_model.UserSessionKeySelectedIDPConfigID, data.SelectedIDPConfigID),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.HumanU2FTokenCheckSucceededType:
+		data := new(es_model.AuthRequest)
+		err := data.SetData(event)
+		if err != nil {
+			return nil, err
+		}
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerification, event.CreatedAt()),
+			handler.NewCol(view_model.UserSessionKeySecondFactorVerificationType, domain.MFATypeU2F),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.HumanPasswordlessTokenCheckSucceededType:
+		data := new(es_model.AuthRequest)
+		err := data.SetData(event)
+		if err != nil {
+			return nil, err
+		}
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordlessVerification, event.CreatedAt()),
+			handler.NewCol(view_model.UserSessionKeyMultiFactorVerification, event.CreatedAt()),
+			handler.NewCol(view_model.UserSessionKeyMultiFactorVerificationType, domain.MFATypeU2FUserVerification),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.HumanPasswordlessTokenCheckFailedType:
+		data := new(es_model.AuthRequest)
+		err := data.SetData(event)
+		if err != nil {
+			return nil, err
+		}
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordlessVerification, time.Time{}),
+			handler.NewCol(view_model.UserSessionKeyMultiFactorVerification, time.Time{}),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewUpsertStatement(event, columns[0:3], columns), nil
+	case user.UserLockedType,
+		user.UserDeactivatedType:
+		return handler.NewUpdateStatement(event,
+			[]handler.Column{
+				handler.NewCol(view_model.UserSessionKeyPasswordlessVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyPasswordVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeySecondFactorVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeySecondFactorVerificationType, domain.MFALevelNotSetUp),
+				handler.NewCol(view_model.UserSessionKeyMultiFactorVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyMultiFactorVerificationType, domain.MFALevelNotSetUp),
+				handler.NewCol(view_model.UserSessionKeyExternalLoginVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyState, domain.UserSessionStateTerminated),
+				handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+				handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+				handler.Not(handler.NewCond(view_model.UserSessionKeyState, domain.UserSessionStateTerminated)),
+			},
+		), nil
+	case user.UserV1PasswordChangedType,
+		user.HumanPasswordChangedType:
+		userAgent, err := agentIDFromSession(event)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewMultiStatement(event,
+			handler.AddUpdateStatement(
+				[]handler.Column{
+					handler.NewCol(view_model.UserSessionKeyPasswordVerification, event.CreatedAt()),
+					handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+					handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+				},
+				[]handler.Condition{
+					handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+					handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+					handler.NewCond(view_model.UserSessionKeyUserAgentID, userAgent),
+				}),
+			handler.AddUpdateStatement(
+				[]handler.Column{
+					handler.NewCol(view_model.UserSessionKeyPasswordVerification, time.Time{}),
+					handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+					handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+				},
+				[]handler.Condition{
+					handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+					handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+					handler.Not(handler.NewCond(view_model.UserSessionKeyUserAgentID, userAgent)),
+					handler.Not(handler.NewCond(view_model.UserSessionKeyState, domain.UserSessionStateTerminated)),
+				}),
+		), nil
+	case user.UserV1MFAOTPRemovedType,
+		user.HumanMFAOTPRemovedType,
+		user.HumanU2FTokenRemovedType:
+		return handler.NewUpdateStatement(event,
+			[]handler.Column{
+				handler.NewCol(view_model.UserSessionKeySecondFactorVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+				handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+				handler.Not(handler.NewCond(view_model.UserSessionKeyState, domain.UserSessionStateTerminated)),
+			},
+		), nil
+	case user.UserIDPLinkRemovedType,
+		user.UserIDPLinkCascadeRemovedType:
+		return handler.NewUpdateStatement(event,
+			[]handler.Column{
+				handler.NewCol(view_model.UserSessionKeyExternalLoginVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeySelectedIDPConfigID, ""),
+				handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+				handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+				handler.Not(handler.NewCond(view_model.UserSessionKeySelectedIDPConfigID, "")),
+			},
+		), nil
+	case user.HumanPasswordlessTokenRemovedType:
+		return handler.NewUpdateStatement(event,
+			[]handler.Column{
+				handler.NewCol(view_model.UserSessionKeyPasswordlessVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyMultiFactorVerification, time.Time{}),
+				handler.NewCol(view_model.UserSessionKeyChangeDate, event.CreatedAt()),
+				handler.NewCol(view_model.UserSessionKeySequence, event.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+				handler.Not(handler.NewCond(view_model.UserSessionKeyState, domain.UserSessionStateTerminated)),
+			},
+		), nil
+	case user.UserRemovedType:
+		return handler.NewDeleteStatement(event,
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyUserID, event.Aggregate().ID),
+			},
+		), nil
+	case user.HumanRegisteredType:
+		columns, err := u.sessionColumnsActivate(event,
+			handler.NewCol(view_model.UserSessionKeyPasswordVerification, event.CreatedAt()),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return handler.NewCreateStatement(event,
+			columns,
+		), nil
+	case instance.InstanceRemovedEventType:
+		return handler.NewDeleteStatement(event,
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+			},
+		), nil
+	case org.OrgRemovedEventType:
+		return handler.NewDeleteStatement(event,
+			[]handler.Condition{
+				handler.NewCond(view_model.UserSessionKeyInstanceID, event.Aggregate().InstanceID),
+				handler.NewCond(view_model.UserSessionKeyResourceOwner, event.Aggregate().ResourceOwner),
+			},
+		), nil
+	default:
+		return handler.NewNoOpStatement(event), nil
+	}
 }

@@ -5,15 +5,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/text/language"
+
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/repository/project"
 	"github.com/zitadel/zitadel/internal/repository/user"
-	"golang.org/x/text/language"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_AddProjectGrantMember(t *testing.T) {
@@ -51,7 +51,7 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -73,7 +73,7 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -101,59 +101,7 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
-			},
-		},
-		{
-			name: "member already exists, precondition error",
-			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-					expectFilter(
-						eventFromEventPusher(
-							user.NewHumanAddedEvent(context.Background(),
-								&user.NewAggregate("user1", "org1").Aggregate,
-								"username1",
-								"firstname1",
-								"lastname1",
-								"nickname1",
-								"displayname1",
-								language.German,
-								domain.GenderMale,
-								"email1",
-								true,
-							),
-						),
-					),
-					expectFilter(
-						eventFromEventPusher(
-							project.NewProjectGrantMemberAddedEvent(context.Background(),
-								&project.NewAggregate("project1", "org1").Aggregate,
-								"user1",
-								"projectgrant1",
-							),
-						),
-					),
-				),
-				zitadelRoles: []authz.RoleMapping{
-					{
-						Role: "PROJECT_GRANT_OWNER",
-					},
-				},
-			},
-			args: args{
-				ctx: context.Background(),
-				member: &domain.ProjectGrantMember{
-					ObjectRoot: models.ObjectRoot{
-						AggregateID: "project1",
-					},
-					GrantID: "projectgrant1",
-					UserID:  "user1",
-					Roles:   []string{"PROJECT_GRANT_OWNER"},
-				},
-			},
-			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -177,17 +125,13 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 							),
 						),
 					),
-					expectFilter(),
-					expectPushFailed(caos_errs.ThrowAlreadyExists(nil, "ERROR", "internal"),
-						[]*repository.Event{
-							eventFromEventPusher(project.NewProjectGrantMemberAddedEvent(context.Background(),
-								&project.NewAggregate("project1", "").Aggregate,
-								"user1",
-								"projectgrant1",
-								[]string{"PROJECT_GRANT_OWNER"}...,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(project.NewAddProjectGrantMemberUniqueConstraint("project1", "user1", "projectgrant1")),
+					expectPushFailed(zerrors.ThrowAlreadyExists(nil, "ERROR", "internal"),
+						project.NewProjectGrantMemberAddedEvent(context.Background(),
+							&project.NewAggregate("project1", "").Aggregate,
+							"user1",
+							"projectgrant1",
+							[]string{"PROJECT_GRANT_OWNER"}...,
+						),
 					),
 				),
 				zitadelRoles: []authz.RoleMapping{
@@ -208,7 +152,7 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
@@ -232,17 +176,13 @@ func TestCommandSide_AddProjectGrantMember(t *testing.T) {
 							),
 						),
 					),
-					expectFilter(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(project.NewProjectGrantMemberAddedEvent(context.Background(),
-								&project.NewAggregate("project1", "").Aggregate,
-								"user1",
-								"projectgrant1",
-								[]string{"PROJECT_GRANT_OWNER"}...,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(project.NewAddProjectGrantMemberUniqueConstraint("project1", "user1", "projectgrant1")),
+						project.NewProjectGrantMemberAddedEvent(context.Background(),
+							&project.NewAggregate("project1", "").Aggregate,
+							"user1",
+							"projectgrant1",
+							[]string{"PROJECT_GRANT_OWNER"}...,
+						),
 					),
 				),
 				zitadelRoles: []authz.RoleMapping{
@@ -329,7 +269,7 @@ func TestCommandSide_ChangeProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -351,7 +291,7 @@ func TestCommandSide_ChangeProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -379,7 +319,7 @@ func TestCommandSide_ChangeProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -416,7 +356,7 @@ func TestCommandSide_ChangeProjectGrantMember(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -435,14 +375,12 @@ func TestCommandSide_ChangeProjectGrantMember(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(project.NewProjectGrantMemberChangedEvent(context.Background(),
-								&project.NewAggregate("project1", "org1").Aggregate,
-								"user1",
-								"projectgrant1",
-								[]string{"PROJECT_GRANT_OWNER", "PROJECT_GRANT_VIEWER"}...,
-							)),
-						},
+						project.NewProjectGrantMemberChangedEvent(context.Background(),
+							&project.NewAggregate("project1", "org1").Aggregate,
+							"user1",
+							"projectgrant1",
+							[]string{"PROJECT_GRANT_OWNER", "PROJECT_GRANT_VIEWER"}...,
+						),
 					),
 				),
 				zitadelRoles: []authz.RoleMapping{
@@ -532,7 +470,7 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 				grantID:   "projectgrant1",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -549,7 +487,7 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 				grantID:   "projectgrant1",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -566,7 +504,7 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 				grantID:   "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -584,7 +522,7 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 				grantID:   "projectgrant1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -603,14 +541,11 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(project.NewProjectGrantMemberRemovedEvent(context.Background(),
-								&project.NewAggregate("project1", "org1").Aggregate,
-								"user1",
-								"projectgrant1",
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(project.NewRemoveProjectGrantMemberUniqueConstraint("project1", "user1", "projectgrant1")),
+						project.NewProjectGrantMemberRemovedEvent(context.Background(),
+							&project.NewAggregate("project1", "org1").Aggregate,
+							"user1",
+							"projectgrant1",
+						),
 					),
 				),
 			},
@@ -640,7 +575,7 @@ func TestCommandSide_RemoveProjectGrantMember(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}

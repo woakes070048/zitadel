@@ -35,10 +35,10 @@ type WithGatewayPrefix interface {
 }
 
 func CreateServer(
-	verifier *authz.TokenVerifier,
+	verifier authz.APITokenVerifier,
 	authConfig authz.Config,
 	queries *query.Queries,
-	hostHeaderName string,
+	externalDomain string,
 	tlsConfig *tls.Config,
 	accessSvc *logstore.Service[*record.AccessLog],
 ) *grpc.Server {
@@ -47,19 +47,22 @@ func CreateServer(
 		grpc.UnaryInterceptor(
 			grpc_middleware.ChainUnaryServer(
 				middleware.CallDurationHandler(),
-				middleware.DefaultTracingServer(),
 				middleware.MetricsHandler(metricTypes, grpc_api.Probes...),
 				middleware.NoCacheInterceptor(),
-				middleware.InstanceInterceptor(queries, hostHeaderName, system_pb.SystemService_ServiceDesc.ServiceName, healthpb.Health_ServiceDesc.ServiceName),
+				middleware.InstanceInterceptor(queries, externalDomain, system_pb.SystemService_ServiceDesc.ServiceName, healthpb.Health_ServiceDesc.ServiceName),
 				middleware.AccessStorageInterceptor(accessSvc),
 				middleware.ErrorHandler(),
+				middleware.LimitsInterceptor(system_pb.SystemService_ServiceDesc.ServiceName),
 				middleware.AuthorizationInterceptor(verifier, authConfig),
-				middleware.QuotaExhaustedInterceptor(accessSvc, system_pb.SystemService_ServiceDesc.ServiceName),
 				middleware.TranslationHandler(),
+				middleware.QuotaExhaustedInterceptor(accessSvc, system_pb.SystemService_ServiceDesc.ServiceName),
+				middleware.ExecutionHandler(queries),
 				middleware.ValidationHandler(),
 				middleware.ServiceHandler(),
+				middleware.ActivityInterceptor(),
 			),
 		),
+		grpc.StatsHandler(middleware.DefaultTracingServer()),
 	}
 	if tlsConfig != nil {
 		serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(tlsConfig)))

@@ -6,6 +6,7 @@ import (
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
 	org_grpc "github.com/zitadel/zitadel/internal/api/grpc/org"
+	http_utils "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/query"
@@ -39,7 +40,10 @@ func (s *Server) RemoveOrg(ctx context.Context, req *admin_pb.RemoveOrgRequest) 
 
 func (s *Server) GetDefaultOrg(ctx context.Context, _ *admin_pb.GetDefaultOrgRequest) (*admin_pb.GetDefaultOrgResponse, error) {
 	org, err := s.query.OrgByID(ctx, true, authz.GetInstance(ctx).DefaultOrganisationID())
-	return &admin_pb.GetDefaultOrgResponse{Org: org_grpc.OrgToPb(org)}, err
+	if err != nil {
+		return nil, err
+	}
+	return &admin_pb.GetDefaultOrgResponse{Org: org_grpc.OrgToPb(org)}, nil
 }
 
 func (s *Server) GetOrgByID(ctx context.Context, req *admin_pb.GetOrgByIDRequest) (*admin_pb.GetOrgByIDResponse, error) {
@@ -55,23 +59,26 @@ func (s *Server) ListOrgs(ctx context.Context, req *admin_pb.ListOrgsRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	orgs, err := s.query.SearchOrgs(ctx, queries)
+	orgs, err := s.query.SearchOrgs(ctx, queries, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &admin_pb.ListOrgsResponse{
 		Result:  org_grpc.OrgViewsToPb(orgs.Orgs),
-		Details: object.ToListDetails(orgs.Count, orgs.Sequence, orgs.Timestamp),
+		Details: object.ToListDetails(orgs.Count, orgs.Sequence, orgs.LastRun),
 	}, nil
 }
 
 func (s *Server) SetUpOrg(ctx context.Context, req *admin_pb.SetUpOrgRequest) (*admin_pb.SetUpOrgResponse, error) {
-	userIDs, err := s.getClaimedUserIDsOfOrgDomain(ctx, domain.NewIAMDomainName(req.Org.Name, authz.GetInstance(ctx).RequestedDomain()))
+	orgDomain, err := domain.NewIAMDomainName(req.Org.Name, http_utils.DomainContext(ctx).RequestedDomain())
+	if err != nil {
+		return nil, err
+	}
+	userIDs, err := s.getClaimedUserIDsOfOrgDomain(ctx, orgDomain)
 	if err != nil {
 		return nil, err
 	}
 	human := setUpOrgHumanToCommand(req.User.(*admin_pb.SetUpOrgRequest_Human_).Human) //TODO: handle machine
-
 	createdOrg, err := s.command.SetUpOrg(ctx, &command.OrgSetup{
 		Name:         req.Org.Name,
 		CustomDomain: req.Org.Domain,
@@ -101,7 +108,7 @@ func (s *Server) getClaimedUserIDsOfOrgDomain(ctx context.Context, orgDomain str
 	if err != nil {
 		return nil, err
 	}
-	users, err := s.query.SearchUsers(ctx, &query.UserSearchQueries{Queries: []query.SearchQuery{loginName}}, false)
+	users, err := s.query.SearchUsers(ctx, &query.UserSearchQueries{Queries: []query.SearchQuery{loginName}}, "", nil)
 	if err != nil {
 		return nil, err
 	}

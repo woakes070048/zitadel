@@ -1,19 +1,22 @@
 import { Injectable } from '@angular/core';
 import { SortDirection } from '@angular/material/sort';
 import { OAuthService } from 'angular-oauth2-oidc';
-import { BehaviorSubject, from, merge, Observable, of, Subject } from 'rxjs';
 import {
-  catchError,
-  distinctUntilChanged,
-  filter,
-  finalize,
-  map,
-  mergeMap,
-  switchMap,
-  take,
-  timeout,
-  withLatestFrom,
-} from 'rxjs/operators';
+  BehaviorSubject,
+  combineLatestWith,
+  defer,
+  distinctUntilKeyChanged,
+  EMPTY,
+  forkJoin,
+  mergeWith,
+  NEVER,
+  Observable,
+  of,
+  shareReplay,
+  Subject,
+  TimeoutError,
+} from 'rxjs';
+import { catchError, distinctUntilChanged, filter, finalize, map, startWith, switchMap, tap, timeout } from 'rxjs/operators';
 
 import {
   AddMyAuthFactorOTPEmailRequest,
@@ -38,13 +41,10 @@ import {
   GetMyPhoneRequest,
   GetMyPhoneResponse,
   GetMyPrivacyPolicyRequest,
-  GetMyPrivacyPolicyResponse,
   GetMyProfileRequest,
   GetMyProfileResponse,
   GetMyUserRequest,
   GetMyUserResponse,
-  GetSupportedLanguagesRequest,
-  GetSupportedLanguagesResponse,
   ListMyAuthFactorsRequest,
   ListMyAuthFactorsResponse,
   ListMyLinkedIDPsRequest,
@@ -111,111 +111,97 @@ import {
 import { ChangeQuery } from '../proto/generated/zitadel/change_pb';
 import { MetadataQuery } from '../proto/generated/zitadel/metadata_pb';
 import { ListQuery } from '../proto/generated/zitadel/object_pb';
-import { Org, OrgFieldName, OrgQuery } from '../proto/generated/zitadel/org_pb';
-import { LabelPolicy } from '../proto/generated/zitadel/policy_pb';
+import { Org, OrgFieldName, OrgIDQuery, OrgQuery } from '../proto/generated/zitadel/org_pb';
+import { LabelPolicy, PrivacyPolicy } from '../proto/generated/zitadel/policy_pb';
 import { Gender, MembershipQuery, User, WebAuthNVerification } from '../proto/generated/zitadel/user_pb';
 import { GrpcService } from './grpc.service';
 import { StorageKey, StorageLocation, StorageService } from './storage.service';
-import { ThemeService } from './theme.service';
+
+const ORG_LIMIT = 10;
 
 @Injectable({
   providedIn: 'root',
 })
 export class GrpcAuthService {
   private _activeOrgChanged: Subject<Org.AsObject | undefined> = new Subject();
-  public user!: Observable<User.AsObject | undefined>;
-  public userSubject: BehaviorSubject<User.AsObject | undefined> = new BehaviorSubject<User.AsObject | undefined>(undefined);
+  public user: Observable<User.AsObject | undefined>;
   private triggerPermissionsRefresh: Subject<void> = new Subject();
-  public zitadelPermissions$: Observable<string[]> = this.triggerPermissionsRefresh.pipe(
-    switchMap(() =>
-      from(this.listMyZitadelPermissions()).pipe(
-        map((rolesResp) => rolesResp.resultList),
-        filter((roles) => !!roles.length),
-        catchError((_) => {
-          return of([]);
-        }),
-        distinctUntilChanged((a, b) => {
-          return JSON.stringify(a.sort()) === JSON.stringify(b.sort());
-        }),
-        finalize(() => {
-          this.fetchedZitadelPermissions.next(true);
-        }),
-      ),
-    ),
-  );
+  public zitadelPermissions: Observable<string[]>;
 
   public labelpolicy$!: Observable<LabelPolicy.AsObject>;
-  public labelpolicy: BehaviorSubject<LabelPolicy.AsObject | undefined> = new BehaviorSubject<
-    LabelPolicy.AsObject | undefined
-  >(undefined);
   labelPolicyLoading$: BehaviorSubject<boolean> = new BehaviorSubject<boolean>(true);
 
-  public zitadelPermissions: BehaviorSubject<string[]> = new BehaviorSubject<string[]>([]);
-  public readonly fetchedZitadelPermissions: BehaviorSubject<boolean> = new BehaviorSubject<boolean>(false);
+  public privacypolicy$: Observable<PrivacyPolicy.AsObject>;
+  public privacypolicy: BehaviorSubject<PrivacyPolicy.AsObject | undefined> = new BehaviorSubject<
+    PrivacyPolicy.AsObject | undefined
+  >(undefined);
 
-  private cachedOrgs: Org.AsObject[] = [];
+  public cachedOrgs: BehaviorSubject<Org.AsObject[]> = new BehaviorSubject<Org.AsObject[]>([]);
   private cachedLabelPolicies: { [orgId: string]: LabelPolicy.AsObject } = {};
+  private cachedPrivacyPolicies: { [orgId: string]: PrivacyPolicy.AsObject } = {};
 
   constructor(
     private readonly grpcService: GrpcService,
     private oauthService: OAuthService,
     private storage: StorageService,
-    themeService: ThemeService,
   ) {
-    this.zitadelPermissions$.subscribe(this.zitadelPermissions);
-
     this.labelpolicy$ = this.activeOrgChanged.pipe(
-      switchMap((org) => {
-        this.labelPolicyLoading$.next(true);
-        return from(this.getMyLabelPolicy(org ? org.id : ''));
-      }),
+      tap(() => this.labelPolicyLoading$.next(true)),
+      switchMap((org) => this.getMyLabelPolicy(org ? org.id : '')),
+      tap(() => this.labelPolicyLoading$.next(false)),
+      finalize(() => this.labelPolicyLoading$.next(false)),
       filter((policy) => !!policy),
+      shareReplay({ refCount: true, bufferSize: 1 }),
     );
 
-    this.labelpolicy$.subscribe({
-      next: (policy) => {
-        themeService.applyLabelPolicy(policy);
-        this.labelpolicy.next(policy);
-        this.labelPolicyLoading$.next(false);
-      },
-      error: (error) => {
-        console.error(error);
-        this.labelPolicyLoading$.next(false);
-      },
-    });
+    this.privacypolicy$ = this.activeOrgChanged.pipe(
+      switchMap((org) => this.getMyPrivacyPolicy(org ? org.id : '')),
+      filter((policy) => !!policy),
+      catchError((err) => {
+        console.error(err);
+        return EMPTY;
+      }),
+      shareReplay({ refCount: true, bufferSize: 1 }),
+    );
 
-    this.user = merge(
-      of(this.oauthService.getAccessToken()).pipe(filter((token) => (token ? true : false))),
+    this.user = forkJoin([
+      defer(() => of(this.oauthService.getAccessToken())),
       this.oauthService.events.pipe(
         filter((e) => e.type === 'token_received'),
-        timeout(this.oauthService.waitForTokenInMsec || 0),
-        catchError((_) => of(null)), // timeout is not an error
+        timeout(this.oauthService.waitForTokenInMsec ?? 0),
+        catchError((err) => {
+          if (err instanceof TimeoutError) {
+            return of(null);
+          }
+          throw err;
+        }), // timeout is not an error
         map((_) => this.oauthService.getAccessToken()),
       ),
-    ).pipe(
-      take(1),
-      mergeMap(() => {
-        return from(
-          this.getMyUser().then((resp) => {
-            const user = resp.user;
-            if (user) {
-              return user;
-            } else {
-              return undefined;
-            }
-          }),
-        );
-      }),
-      finalize(() => {
-        this.loadPermissions();
-      }),
+    ]).pipe(
+      filter(([_, token]) => !!token),
+      distinctUntilKeyChanged(1),
+      switchMap(() => this.getMyUser().then((resp) => resp.user)),
+      startWith(undefined),
+      shareReplay({ refCount: true, bufferSize: 1 }),
     );
 
-    this.user.subscribe(this.userSubject);
-
-    this.activeOrgChanged.subscribe(() => {
-      this.loadPermissions();
-    });
+    this.zitadelPermissions = this.user.pipe(
+      combineLatestWith(this.activeOrgChanged),
+      // ignore errors from observables
+      catchError(() => of(true)),
+      // make sure observable never completes
+      mergeWith(NEVER),
+      switchMap(() =>
+        this.listMyZitadelPermissions()
+          .then((resp) => resp.resultList)
+          .catch(() => <string[]>[]),
+      ),
+      filter((roles) => !!roles.length),
+      distinctUntilChanged((a, b) => {
+        return JSON.stringify(a.sort()) === JSON.stringify(b.sort());
+      }),
+      shareReplay({ refCount: true, bufferSize: 1 }),
+    );
   }
 
   public listMyMetadata(
@@ -239,42 +225,60 @@ export class GrpcAuthService {
 
   public async getActiveOrg(id?: string): Promise<Org.AsObject> {
     if (id) {
-      const find = this.cachedOrgs.find((tmp) => tmp.id === id);
+      const find = this.cachedOrgs.getValue().find((tmp) => tmp.id === id);
       if (find) {
         this.setActiveOrg(find);
         return Promise.resolve(find);
       } else {
-        const orgs = (await this.listMyProjectOrgs(10, 0)).resultList;
-        this.cachedOrgs = orgs;
+        const orgQuery = new OrgQuery();
+        const orgIdQuery = new OrgIDQuery();
+        orgIdQuery.setId(id);
+        orgQuery.setIdQuery(orgIdQuery);
 
-        const toFind = this.cachedOrgs.find((tmp) => tmp.id === id);
-        if (toFind) {
-          this.setActiveOrg(toFind);
-          return Promise.resolve(toFind);
+        const orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0, [orgQuery])).resultList;
+        if (orgs.length === 1) {
+          this.setActiveOrg(orgs[0]);
+          return Promise.resolve(orgs[0]);
         } else {
+          // throw error if the org was specifically requested but not found
           return Promise.reject(new Error('requested organization not found'));
         }
       }
     } else {
-      let orgs = this.cachedOrgs;
-      if (orgs.length === 0) {
-        orgs = (await this.listMyProjectOrgs()).resultList;
-        this.cachedOrgs = orgs;
-      }
-
+      let orgs = this.cachedOrgs.getValue();
       const org = this.storage.getItem<Org.AsObject>(StorageKey.organization, StorageLocation.local);
-      if (org && orgs.find((tmp) => tmp.id === org.id)) {
-        this.storage.setItem(StorageKey.organization, org, StorageLocation.session);
-        this.setActiveOrg(org);
-        return Promise.resolve(org);
+
+      if (org) {
+        orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+        this.cachedOrgs.next(orgs);
+
+        const find = this.cachedOrgs.getValue().find((tmp) => tmp.id === id);
+        if (find) {
+          this.setActiveOrg(find);
+          return Promise.resolve(find);
+        } else {
+          const orgQuery = new OrgQuery();
+          const orgIdQuery = new OrgIDQuery();
+          orgIdQuery.setId(org.id);
+          orgQuery.setIdQuery(orgIdQuery);
+
+          const specificOrg = (await this.listMyProjectOrgs(ORG_LIMIT, 0, [orgQuery])).resultList;
+          if (specificOrg.length === 1) {
+            this.setActiveOrg(specificOrg[0]);
+            return Promise.resolve(specificOrg[0]);
+          }
+        }
+      } else {
+        orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+        this.cachedOrgs.next(orgs);
       }
 
       if (orgs.length === 0) {
         this._activeOrgChanged.next(undefined);
         return Promise.reject(new Error('No organizations found!'));
       }
-      const orgToSet = orgs.find((element) => element.id !== '0' && element.name !== '');
 
+      const orgToSet = orgs.find((element) => element.id !== '0' && element.name !== '');
       if (orgToSet) {
         this.setActiveOrg(orgToSet);
         return Promise.resolve(orgToSet);
@@ -284,7 +288,7 @@ export class GrpcAuthService {
   }
 
   public get activeOrgChanged(): Observable<Org.AsObject | undefined> {
-    return this._activeOrgChanged;
+    return this._activeOrgChanged.asObservable();
   }
 
   public setActiveOrg(org: Org.AsObject): void {
@@ -303,21 +307,37 @@ export class GrpcAuthService {
    * @param roles roles of the user
    */
   public isAllowed(roles: string[] | RegExp[], requiresAll: boolean = false): Observable<boolean> {
-    if (roles && roles.length > 0) {
-      return this.fetchedZitadelPermissions.pipe(
-        withLatestFrom(this.zitadelPermissions),
-        filter(([hL, p]) => {
-          return hL === true && !!p.length;
-        }),
-        map(([_, zroles]) => {
-          const what = this.hasRoles(zroles, roles, requiresAll);
-          return what;
-        }),
-        distinctUntilChanged(),
-      );
-    } else {
+    if (!roles?.length) {
       return of(false);
     }
+
+    return this.zitadelPermissions.pipe(
+      filter((permissions) => !!permissions.length),
+      map((permissions) => this.hasRoles(permissions, roles, requiresAll)),
+      distinctUntilChanged(),
+    );
+  }
+
+  /**
+   * filters objects based on roles
+   * @param objects array of objects
+   * @param mapper mapping function which maps to a string[] or Regexp[] of roles
+   * @param requiresAll wheter all, or just a single roles is required to fulfill
+   */
+  public isAllowedMapper<T>(
+    objects: T[],
+    mapper: (attr: any) => string[] | RegExp[],
+    requiresAll: boolean = false,
+  ): Observable<T[]> {
+    return this.zitadelPermissions.pipe(
+      filter((permissions) => !!permissions.length),
+      map((permissions) =>
+        objects.filter((obj) => {
+          const roles = mapper(obj);
+          return this.hasRoles(permissions, roles, requiresAll);
+        }),
+      ),
+    );
   }
 
   /**
@@ -348,25 +368,17 @@ export class GrpcAuthService {
       .then((resp) => resp.toObject());
   }
 
-  public loadMyUser(): void {
-    from(this.getMyUser())
-      .pipe(
-        map((resp) => resp.user),
-        catchError((_) => {
-          return of(undefined);
-        }),
-      )
-      .subscribe((user) => {
-        this.userSubject.next(user);
-      });
-  }
-
   public getMyUser(): Promise<GetMyUserResponse.AsObject> {
     return this.grpcService.auth.getMyUser(new GetMyUserRequest(), null).then((resp) => resp.toObject());
   }
 
   public listMyMultiFactors(): Promise<ListMyAuthFactorsResponse.AsObject> {
     return this.grpcService.auth.listMyAuthFactors(new ListMyAuthFactorsRequest(), null).then((resp) => resp.toObject());
+  }
+
+  public async revalidateOrgs() {
+    const orgs = (await this.listMyProjectOrgs(ORG_LIMIT, 0)).resultList;
+    this.cachedOrgs.next(orgs);
   }
 
   public listMyProjectOrgs(
@@ -387,9 +399,12 @@ export class GrpcAuthService {
     if (queryList) {
       req.setQueriesList(queryList);
     }
-    // if (sortingColumn) {
-    //     req.setSortingColumn(sortingColumn);
-    // }
+    if (sortingDirection) {
+      query.setAsc(sortingDirection === 'asc');
+    }
+    if (sortingColumn) {
+      req.setSortingColumn(sortingColumn);
+    }
 
     req.setQuery(query);
 
@@ -486,11 +501,6 @@ export class GrpcAuthService {
   public resendMyEmailVerification(): Promise<ResendMyEmailVerificationResponse.AsObject> {
     const req = new ResendMyEmailVerificationRequest();
     return this.grpcService.auth.resendMyEmailVerification(req, null).then((resp) => resp.toObject());
-  }
-
-  public getSupportedLanguages(): Promise<GetSupportedLanguagesResponse.AsObject> {
-    const req = new GetSupportedLanguagesRequest();
-    return this.grpcService.auth.getSupportedLanguages(req, null).then((resp) => resp.toObject());
   }
 
   public getMyLoginPolicy(): Promise<GetMyLoginPolicyResponse.AsObject> {
@@ -678,24 +688,39 @@ export class GrpcAuthService {
   public getMyLabelPolicy(orgIdForCache?: string): Promise<LabelPolicy.AsObject> {
     if (orgIdForCache && this.cachedLabelPolicies[orgIdForCache]) {
       return Promise.resolve(this.cachedLabelPolicies[orgIdForCache]);
-    } else {
-      return this.grpcService.auth
-        .getMyLabelPolicy(new GetMyLabelPolicyRequest(), null)
-        .then((resp) => resp.toObject())
-        .then((resp) => {
-          if (resp.policy) {
-            if (orgIdForCache) {
-              this.cachedLabelPolicies[orgIdForCache] = resp.policy;
-            }
-            return Promise.resolve(resp.policy);
-          } else {
-            return Promise.reject();
-          }
-        });
     }
+
+    return this.grpcService.auth
+      .getMyLabelPolicy(new GetMyLabelPolicyRequest(), null)
+      .then((resp) => resp.toObject())
+      .then((resp) => {
+        if (!resp.policy) {
+          return Promise.reject();
+        }
+        if (orgIdForCache) {
+          this.cachedLabelPolicies[orgIdForCache] = resp.policy;
+        }
+        return resp.policy;
+      });
   }
 
-  public getMyPrivacyPolicy(): Promise<GetMyPrivacyPolicyResponse.AsObject> {
-    return this.grpcService.auth.getMyPrivacyPolicy(new GetMyPrivacyPolicyRequest(), null).then((resp) => resp.toObject());
+  public getMyPrivacyPolicy(orgIdForCache?: string): Promise<PrivacyPolicy.AsObject> {
+    if (orgIdForCache && this.cachedPrivacyPolicies[orgIdForCache]) {
+      return Promise.resolve(this.cachedPrivacyPolicies[orgIdForCache]);
+    }
+
+    return this.grpcService.auth
+      .getMyPrivacyPolicy(new GetMyPrivacyPolicyRequest(), null)
+      .then((resp) => resp.toObject())
+      .then((resp) => {
+        if (!resp.policy) {
+          return Promise.reject();
+        }
+
+        if (orgIdForCache) {
+          this.cachedPrivacyPolicies[orgIdForCache] = resp.policy;
+        }
+        return resp.policy;
+      });
   }
 }

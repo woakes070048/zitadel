@@ -4,13 +4,16 @@ import (
 	"context"
 	"strings"
 
+	"github.com/zitadel/saml/pkg/provider/xml"
+
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/idp/providers/saml"
 	"github.com/zitadel/zitadel/internal/repository/instance"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func (c *Commands) AddInstanceGenericOAuthProvider(ctx context.Context, provider GenericOAuthProvider) (string, *domain.ObjectDetails, error) {
@@ -117,7 +120,7 @@ func (c *Commands) migrateInstanceGenericOIDC(ctx context.Context, id string, pr
 	case GoogleProvider:
 		validation = c.prepareMigrateInstanceOIDCToGoogleProvider(instanceAgg, writeModel, p)
 	default:
-		return nil, caos_errs.ThrowInvalidArgument(nil, "COMMAND-s9219", "Errors.IDPConfig.NotExisting")
+		return nil, zerrors.ThrowInvalidArgument(nil, "COMMAND-s9219", "Errors.IDPConfig.NotExisting")
 	}
 
 	cmds, err := preparation.PrepareCommands(ctx, c.eventstore.Filter, validation)
@@ -509,6 +512,71 @@ func (c *Commands) UpdateInstanceAppleProvider(ctx context.Context, id string, p
 	return pushedEventsToObjectDetails(pushedEvents), nil
 }
 
+func (c *Commands) AddInstanceSAMLProvider(ctx context.Context, provider *SAMLProvider) (id string, details *domain.ObjectDetails, err error) {
+	instanceID := authz.GetInstance(ctx).InstanceID()
+	instanceAgg := instance.NewAggregate(instanceID)
+	id, err = c.idGenerator.Next()
+	if err != nil {
+		return "", nil, err
+	}
+	writeModel := NewSAMLInstanceIDPWriteModel(instanceID, id)
+	cmds, err := preparation.PrepareCommands(ctx, c.eventstore.Filter, c.prepareAddInstanceSAMLProvider(instanceAgg, writeModel, provider))
+	if err != nil {
+		return "", nil, err
+	}
+	pushedEvents, err := c.eventstore.Push(ctx, cmds...)
+	if err != nil {
+		return "", nil, err
+	}
+	return id, pushedEventsToObjectDetails(pushedEvents), nil
+}
+
+func (c *Commands) UpdateInstanceSAMLProvider(ctx context.Context, id string, provider *SAMLProvider) (details *domain.ObjectDetails, err error) {
+	instanceID := authz.GetInstance(ctx).InstanceID()
+	instanceAgg := instance.NewAggregate(instanceID)
+	writeModel := NewSAMLInstanceIDPWriteModel(instanceID, id)
+	cmds, err := preparation.PrepareCommands(ctx, c.eventstore.Filter, c.prepareUpdateInstanceSAMLProvider(instanceAgg, writeModel, provider))
+	if err != nil {
+		return nil, err
+	}
+	if len(cmds) == 0 {
+		// no change, so return directly
+		return &domain.ObjectDetails{
+			Sequence:      writeModel.ProcessedSequence,
+			EventDate:     writeModel.ChangeDate,
+			ResourceOwner: writeModel.ResourceOwner,
+		}, nil
+	}
+	pushedEvents, err := c.eventstore.Push(ctx, cmds...)
+	if err != nil {
+		return nil, err
+	}
+	return pushedEventsToObjectDetails(pushedEvents), nil
+}
+
+func (c *Commands) RegenerateInstanceSAMLProviderCertificate(ctx context.Context, id string) (*domain.ObjectDetails, error) {
+	instanceID := authz.GetInstance(ctx).InstanceID()
+	instanceAgg := instance.NewAggregate(instanceID)
+	writeModel := NewSAMLInstanceIDPWriteModel(instanceID, id)
+	cmds, err := preparation.PrepareCommands(ctx, c.eventstore.Filter, c.prepareRegenerateInstanceSAMLProviderCertificate(instanceAgg, writeModel))
+	if err != nil {
+		return nil, err
+	}
+	if len(cmds) == 0 {
+		// no change, so return directly
+		return &domain.ObjectDetails{
+			Sequence:      writeModel.ProcessedSequence,
+			EventDate:     writeModel.ChangeDate,
+			ResourceOwner: writeModel.ResourceOwner,
+		}, nil
+	}
+	pushedEvents, err := c.eventstore.Push(ctx, cmds...)
+	if err != nil {
+		return nil, err
+	}
+	return pushedEventsToObjectDetails(pushedEvents), nil
+}
+
 func (c *Commands) DeleteInstanceProvider(ctx context.Context, id string) (*domain.ObjectDetails, error) {
 	instanceAgg := instance.NewAggregate(authz.GetInstance(ctx).InstanceID())
 	cmds, err := preparation.PrepareCommands(ctx, c.eventstore.Filter, c.prepareDeleteInstanceProvider(instanceAgg, id))
@@ -542,25 +610,25 @@ func ExistsInstanceIDP(ctx context.Context, filter preparation.FilterToQueryRedu
 func (c *Commands) prepareAddInstanceOAuthProvider(a *instance.Aggregate, writeModel *InstanceOAuthIDPWriteModel, provider GenericOAuthProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-D32ef", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-D32ef", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dbgzf", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dbgzf", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-DF4ga", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-DF4ga", "Errors.Invalid.Argument")
 		}
 		if provider.AuthorizationEndpoint = strings.TrimSpace(provider.AuthorizationEndpoint); provider.AuthorizationEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-B23bs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-B23bs", "Errors.Invalid.Argument")
 		}
 		if provider.TokenEndpoint = strings.TrimSpace(provider.TokenEndpoint); provider.TokenEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-D2gj8", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-D2gj8", "Errors.Invalid.Argument")
 		}
 		if provider.UserEndpoint = strings.TrimSpace(provider.UserEndpoint); provider.UserEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Fb8jk", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Fb8jk", "Errors.Invalid.Argument")
 		}
 		if provider.IDAttribute = strings.TrimSpace(provider.IDAttribute); provider.IDAttribute == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdf3f", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdf3f", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -598,25 +666,25 @@ func (c *Commands) prepareAddInstanceOAuthProvider(a *instance.Aggregate, writeM
 func (c *Commands) prepareUpdateInstanceOAuthProvider(a *instance.Aggregate, writeModel *InstanceOAuthIDPWriteModel, provider GenericOAuthProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAffg", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAffg", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Sf3gh", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Sf3gh", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SHJ3ui", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SHJ3ui", "Errors.Invalid.Argument")
 		}
 		if provider.AuthorizationEndpoint = strings.TrimSpace(provider.AuthorizationEndpoint); provider.AuthorizationEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SVrgh", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SVrgh", "Errors.Invalid.Argument")
 		}
 		if provider.TokenEndpoint = strings.TrimSpace(provider.TokenEndpoint); provider.TokenEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-DJKeio", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-DJKeio", "Errors.Invalid.Argument")
 		}
 		if provider.UserEndpoint = strings.TrimSpace(provider.UserEndpoint); provider.UserEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-ILSJi", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-ILSJi", "Errors.Invalid.Argument")
 		}
 		if provider.IDAttribute = strings.TrimSpace(provider.IDAttribute); provider.IDAttribute == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-JKD3h", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-JKD3h", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -628,7 +696,7 @@ func (c *Commands) prepareUpdateInstanceOAuthProvider(a *instance.Aggregate, wri
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-D3r1s", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-D3r1s", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -656,16 +724,16 @@ func (c *Commands) prepareUpdateInstanceOAuthProvider(a *instance.Aggregate, wri
 func (c *Commands) prepareAddInstanceOIDCProvider(a *instance.Aggregate, writeModel *InstanceOIDCIDPWriteModel, provider GenericOIDCProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Sgtj5", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Sgtj5", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Hz6zj", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Hz6zj", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-fb5jm", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-fb5jm", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Sfdf4", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Sfdf4", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -701,16 +769,16 @@ func (c *Commands) prepareAddInstanceOIDCProvider(a *instance.Aggregate, writeMo
 func (c *Commands) prepareUpdateInstanceOIDCProvider(a *instance.Aggregate, writeModel *InstanceOIDCIDPWriteModel, provider GenericOIDCProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAfd3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAfd3", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dvf4f", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dvf4f", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-BDfr3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-BDfr3", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Db3bs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Db3bs", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -722,7 +790,7 @@ func (c *Commands) prepareUpdateInstanceOIDCProvider(a *instance.Aggregate, writ
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Dg331", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Dg331", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -748,13 +816,13 @@ func (c *Commands) prepareUpdateInstanceOIDCProvider(a *instance.Aggregate, writ
 func (c *Commands) prepareMigrateInstanceOIDCToAzureADProvider(a *instance.Aggregate, writeModel *InstanceOIDCIDPWriteModel, provider AzureADProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdf3g", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdf3g", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Fhbr2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Fhbr2", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dzh3g", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dzh3g", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -766,7 +834,7 @@ func (c *Commands) prepareMigrateInstanceOIDCToAzureADProvider(a *instance.Aggre
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Dg29201", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Dg29201", "Errors.IDPConfig.NotExisting")
 			}
 			secret, err := crypto.Encrypt([]byte(provider.ClientSecret), c.idpConfigEncryption)
 			if err != nil {
@@ -793,10 +861,10 @@ func (c *Commands) prepareMigrateInstanceOIDCToAzureADProvider(a *instance.Aggre
 func (c *Commands) prepareMigrateInstanceOIDCToGoogleProvider(a *instance.Aggregate, writeModel *InstanceOIDCIDPWriteModel, provider GoogleProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-D3fvs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-D3fvs", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-W2vqs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-W2vqs", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -808,7 +876,7 @@ func (c *Commands) prepareMigrateInstanceOIDCToGoogleProvider(a *instance.Aggreg
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Dg29202", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Dg29202", "Errors.IDPConfig.NotExisting")
 			}
 			secret, err := crypto.Encrypt([]byte(provider.ClientSecret), c.idpConfigEncryption)
 			if err != nil {
@@ -833,19 +901,19 @@ func (c *Commands) prepareMigrateInstanceOIDCToGoogleProvider(a *instance.Aggreg
 func (c *Commands) prepareAddInstanceJWTProvider(a *instance.Aggregate, writeModel *InstanceJWTIDPWriteModel, provider JWTProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-JLKef", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-JLKef", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-WNJK3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-WNJK3", "Errors.Invalid.Argument")
 		}
 		if provider.JWTEndpoint = strings.TrimSpace(provider.JWTEndpoint); provider.JWTEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-NJKSD", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-NJKSD", "Errors.Invalid.Argument")
 		}
 		if provider.KeyEndpoint = strings.TrimSpace(provider.KeyEndpoint); provider.KeyEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-NJKE3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-NJKE3", "Errors.Invalid.Argument")
 		}
 		if provider.HeaderName = strings.TrimSpace(provider.HeaderName); provider.HeaderName == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-2rlks", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-2rlks", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -876,22 +944,22 @@ func (c *Commands) prepareAddInstanceJWTProvider(a *instance.Aggregate, writeMod
 func (c *Commands) prepareUpdateInstanceJWTProvider(a *instance.Aggregate, writeModel *InstanceJWTIDPWriteModel, provider JWTProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-HUe3q", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-HUe3q", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-JKLS2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-JKLS2", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-JKs3f", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-JKs3f", "Errors.Invalid.Argument")
 		}
 		if provider.JWTEndpoint = strings.TrimSpace(provider.JWTEndpoint); provider.JWTEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-NJKS2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-NJKS2", "Errors.Invalid.Argument")
 		}
 		if provider.KeyEndpoint = strings.TrimSpace(provider.KeyEndpoint); provider.KeyEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SJk2d", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SJk2d", "Errors.Invalid.Argument")
 		}
 		if provider.HeaderName = strings.TrimSpace(provider.HeaderName); provider.HeaderName == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SJK2f", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SJK2f", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -903,7 +971,7 @@ func (c *Commands) prepareUpdateInstanceJWTProvider(a *instance.Aggregate, write
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Bhju5", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Bhju5", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -927,13 +995,13 @@ func (c *Commands) prepareUpdateInstanceJWTProvider(a *instance.Aggregate, write
 func (c *Commands) prepareAddInstanceAzureADProvider(a *instance.Aggregate, writeModel *InstanceAzureADIDPWriteModel, provider AzureADProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdf3g", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdf3g", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Fhbr2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Fhbr2", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dzh3g", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dzh3g", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -969,13 +1037,13 @@ func (c *Commands) prepareAddInstanceAzureADProvider(a *instance.Aggregate, writ
 func (c *Commands) prepareUpdateInstanceAzureADProvider(a *instance.Aggregate, writeModel *InstanceAzureADIDPWriteModel, provider AzureADProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAgh2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAgh2", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-fh3h1", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-fh3h1", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-dmitg", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-dmitg", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -987,7 +1055,7 @@ func (c *Commands) prepareUpdateInstanceAzureADProvider(a *instance.Aggregate, w
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-BHz3q", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-BHz3q", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1013,10 +1081,10 @@ func (c *Commands) prepareUpdateInstanceAzureADProvider(a *instance.Aggregate, w
 func (c *Commands) prepareAddInstanceGitHubProvider(a *instance.Aggregate, writeModel *InstanceGitHubIDPWriteModel, provider GitHubProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Jdsgf", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Jdsgf", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-dsgz3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-dsgz3", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1050,10 +1118,10 @@ func (c *Commands) prepareAddInstanceGitHubProvider(a *instance.Aggregate, write
 func (c *Commands) prepareUpdateInstanceGitHubProvider(a *instance.Aggregate, writeModel *InstanceGitHubIDPWriteModel, provider GitHubProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdf4h", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdf4h", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-fdh5z", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-fdh5z", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1065,7 +1133,7 @@ func (c *Commands) prepareUpdateInstanceGitHubProvider(a *instance.Aggregate, wr
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Dr1gs", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Dr1gs", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1089,22 +1157,22 @@ func (c *Commands) prepareUpdateInstanceGitHubProvider(a *instance.Aggregate, wr
 func (c *Commands) prepareAddInstanceGitHubEnterpriseProvider(a *instance.Aggregate, writeModel *InstanceGitHubEnterpriseIDPWriteModel, provider GitHubEnterpriseProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dg4td", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dg4td", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-dgj53", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-dgj53", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Ghjjs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Ghjjs", "Errors.Invalid.Argument")
 		}
 		if provider.AuthorizationEndpoint = strings.TrimSpace(provider.AuthorizationEndpoint); provider.AuthorizationEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sani2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sani2", "Errors.Invalid.Argument")
 		}
 		if provider.TokenEndpoint = strings.TrimSpace(provider.TokenEndpoint); provider.TokenEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-agj42", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-agj42", "Errors.Invalid.Argument")
 		}
 		if provider.UserEndpoint = strings.TrimSpace(provider.UserEndpoint); provider.UserEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sd5hn", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sd5hn", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1141,22 +1209,22 @@ func (c *Commands) prepareAddInstanceGitHubEnterpriseProvider(a *instance.Aggreg
 func (c *Commands) prepareUpdateInstanceGitHubEnterpriseProvider(a *instance.Aggregate, writeModel *InstanceGitHubEnterpriseIDPWriteModel, provider GitHubEnterpriseProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdfh3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdfh3", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-shj42", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-shj42", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdh73", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdh73", "Errors.Invalid.Argument")
 		}
 		if provider.AuthorizationEndpoint = strings.TrimSpace(provider.AuthorizationEndpoint); provider.AuthorizationEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-acx2w", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-acx2w", "Errors.Invalid.Argument")
 		}
 		if provider.TokenEndpoint = strings.TrimSpace(provider.TokenEndpoint); provider.TokenEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-dgj6q", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-dgj6q", "Errors.Invalid.Argument")
 		}
 		if provider.UserEndpoint = strings.TrimSpace(provider.UserEndpoint); provider.UserEndpoint == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-ybj62", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-ybj62", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1168,7 +1236,7 @@ func (c *Commands) prepareUpdateInstanceGitHubEnterpriseProvider(a *instance.Agg
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-GBr42", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-GBr42", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1195,10 +1263,10 @@ func (c *Commands) prepareUpdateInstanceGitHubEnterpriseProvider(a *instance.Agg
 func (c *Commands) prepareAddInstanceGitLabProvider(a *instance.Aggregate, writeModel *InstanceGitLabIDPWriteModel, provider GitLabProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-adsg2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-adsg2", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-GD1j2", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-GD1j2", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1232,10 +1300,10 @@ func (c *Commands) prepareAddInstanceGitLabProvider(a *instance.Aggregate, write
 func (c *Commands) prepareUpdateInstanceGitLabProvider(a *instance.Aggregate, writeModel *InstanceGitLabIDPWriteModel, provider GitLabProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-HJK91", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-HJK91", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-D12t6", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-D12t6", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1247,7 +1315,7 @@ func (c *Commands) prepareUpdateInstanceGitLabProvider(a *instance.Aggregate, wr
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-HBReq", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-HBReq", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1271,16 +1339,16 @@ func (c *Commands) prepareUpdateInstanceGitLabProvider(a *instance.Aggregate, wr
 func (c *Commands) prepareAddInstanceGitLabSelfHostedProvider(a *instance.Aggregate, writeModel *InstanceGitLabSelfHostedIDPWriteModel, provider GitLabSelfHostedProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-jw4ZT", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-jw4ZT", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-AST4S", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-AST4S", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-DBZHJ", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-DBZHJ", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SDGJ4", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SDGJ4", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1315,16 +1383,16 @@ func (c *Commands) prepareAddInstanceGitLabSelfHostedProvider(a *instance.Aggreg
 func (c *Commands) prepareUpdateInstanceGitLabSelfHostedProvider(a *instance.Aggregate, writeModel *InstanceGitLabSelfHostedIDPWriteModel, provider GitLabSelfHostedProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAFG4", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAFG4", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-DG4H", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-DG4H", "Errors.Invalid.Argument")
 		}
 		if provider.Issuer = strings.TrimSpace(provider.Issuer); provider.Issuer == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SD4eb", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SD4eb", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-GHWE3", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-GHWE3", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1336,7 +1404,7 @@ func (c *Commands) prepareUpdateInstanceGitLabSelfHostedProvider(a *instance.Agg
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-D2tg1", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-D2tg1", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1361,10 +1429,10 @@ func (c *Commands) prepareUpdateInstanceGitLabSelfHostedProvider(a *instance.Agg
 func (c *Commands) prepareAddInstanceGoogleProvider(a *instance.Aggregate, writeModel *InstanceGoogleIDPWriteModel, provider GoogleProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-D3fvs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-D3fvs", "Errors.Invalid.Argument")
 		}
 		if provider.ClientSecret = strings.TrimSpace(provider.ClientSecret); provider.ClientSecret == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-W2vqs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-W2vqs", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1398,10 +1466,10 @@ func (c *Commands) prepareAddInstanceGoogleProvider(a *instance.Aggregate, write
 func (c *Commands) prepareUpdateInstanceGoogleProvider(a *instance.Aggregate, writeModel *InstanceGoogleIDPWriteModel, provider GoogleProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-S32t1", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-S32t1", "Errors.Invalid.Argument")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-ds432", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-ds432", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1413,7 +1481,7 @@ func (c *Commands) prepareUpdateInstanceGoogleProvider(a *instance.Aggregate, wr
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-D3r1s", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-D3r1s", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1437,28 +1505,28 @@ func (c *Commands) prepareUpdateInstanceGoogleProvider(a *instance.Aggregate, wr
 func (c *Commands) prepareAddInstanceLDAPProvider(a *instance.Aggregate, writeModel *InstanceLDAPIDPWriteModel, provider LDAPProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAfdd", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAfdd", "Errors.Invalid.Argument")
 		}
 		if provider.BaseDN = strings.TrimSpace(provider.BaseDN); provider.BaseDN == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sv31s", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sv31s", "Errors.Invalid.Argument")
 		}
 		if provider.BindDN = strings.TrimSpace(provider.BindDN); provider.BindDN == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-sdgf4", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-sdgf4", "Errors.Invalid.Argument")
 		}
 		if provider.BindPassword = strings.TrimSpace(provider.BindPassword); provider.BindPassword == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-AEG2w", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-AEG2w", "Errors.Invalid.Argument")
 		}
 		if provider.UserBase = strings.TrimSpace(provider.UserBase); provider.UserBase == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAD5n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAD5n", "Errors.Invalid.Argument")
 		}
 		if len(provider.Servers) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAx905n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAx905n", "Errors.Invalid.Argument")
 		}
 		if len(provider.UserObjectClasses) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-S1x905n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-S1x905n", "Errors.Invalid.Argument")
 		}
 		if len(provider.UserFilters) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-aAx905n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-aAx905n", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1488,6 +1556,7 @@ func (c *Commands) prepareAddInstanceLDAPProvider(a *instance.Aggregate, writeMo
 					provider.UserObjectClasses,
 					provider.UserFilters,
 					provider.Timeout,
+					provider.RootCA,
 					provider.LDAPAttributes,
 					provider.IDPOptions,
 				),
@@ -1499,28 +1568,28 @@ func (c *Commands) prepareAddInstanceLDAPProvider(a *instance.Aggregate, writeMo
 func (c *Commands) prepareUpdateInstanceLDAPProvider(a *instance.Aggregate, writeModel *InstanceLDAPIDPWriteModel, provider LDAPProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Dgdbs", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Dgdbs", "Errors.Invalid.Argument")
 		}
 		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Sffgd", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Sffgd", "Errors.Invalid.Argument")
 		}
 		if provider.BaseDN = strings.TrimSpace(provider.BaseDN); provider.BaseDN == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-vb3ss", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-vb3ss", "Errors.Invalid.Argument")
 		}
 		if provider.BindDN = strings.TrimSpace(provider.BindDN); provider.BindDN == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-hbere", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-hbere", "Errors.Invalid.Argument")
 		}
 		if provider.UserBase = strings.TrimSpace(provider.UserBase); provider.UserBase == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-DG45z", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-DG45z", "Errors.Invalid.Argument")
 		}
 		if len(provider.Servers) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SAx945n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SAx945n", "Errors.Invalid.Argument")
 		}
 		if len(provider.UserObjectClasses) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-S1x605n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-S1x605n", "Errors.Invalid.Argument")
 		}
 		if len(provider.UserFilters) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-aAx901n", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-aAx901n", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1532,7 +1601,7 @@ func (c *Commands) prepareUpdateInstanceLDAPProvider(a *instance.Aggregate, writ
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-ASF3F", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-ASF3F", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1548,6 +1617,7 @@ func (c *Commands) prepareUpdateInstanceLDAPProvider(a *instance.Aggregate, writ
 				provider.UserObjectClasses,
 				provider.UserFilters,
 				provider.Timeout,
+				provider.RootCA,
 				c.idpConfigEncryption,
 				provider.LDAPAttributes,
 				provider.IDPOptions,
@@ -1563,16 +1633,16 @@ func (c *Commands) prepareUpdateInstanceLDAPProvider(a *instance.Aggregate, writ
 func (c *Commands) prepareAddInstanceAppleProvider(a *instance.Aggregate, writeModel *InstanceAppleIDPWriteModel, provider AppleProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-jkn3w", "Errors.IDP.ClientIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-jkn3w", "Errors.IDP.ClientIDMissing")
 		}
 		if provider.TeamID = strings.TrimSpace(provider.TeamID); provider.TeamID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Ffg32", "Errors.IDP.TeamIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Ffg32", "Errors.IDP.TeamIDMissing")
 		}
 		if provider.KeyID = strings.TrimSpace(provider.KeyID); provider.KeyID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-GDjm5", "Errors.IDP.KeyIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-GDjm5", "Errors.IDP.KeyIDMissing")
 		}
 		if len(provider.PrivateKey) == 0 {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-GVD4n", "Errors.IDP.PrivateKeyMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-GVD4n", "Errors.IDP.PrivateKeyMissing")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1608,16 +1678,16 @@ func (c *Commands) prepareAddInstanceAppleProvider(a *instance.Aggregate, writeM
 func (c *Commands) prepareUpdateInstanceAppleProvider(a *instance.Aggregate, writeModel *InstanceAppleIDPWriteModel, provider AppleProvider) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-FRHBH", "Errors.IDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-FRHBH", "Errors.IDMissing")
 		}
 		if provider.ClientID = strings.TrimSpace(provider.ClientID); provider.ClientID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SFm4l", "Errors.IDP.ClientIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SFm4l", "Errors.IDP.ClientIDMissing")
 		}
 		if provider.TeamID = strings.TrimSpace(provider.TeamID); provider.TeamID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-SG34t", "Errors.IDP.TeamIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-SG34t", "Errors.IDP.TeamIDMissing")
 		}
 		if provider.KeyID = strings.TrimSpace(provider.KeyID); provider.KeyID == "" {
-			return nil, caos_errs.ThrowInvalidArgument(nil, "INST-Gh4z2", "Errors.IDP.KeyIDMissing")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-Gh4z2", "Errors.IDP.KeyIDMissing")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			events, err := filter(ctx, writeModel.Query())
@@ -1629,7 +1699,7 @@ func (c *Commands) prepareUpdateInstanceAppleProvider(a *instance.Aggregate, wri
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-SG3bh", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-SG3bh", "Errors.IDPConfig.NotExisting")
 			}
 			event, err := writeModel.NewChangedEvent(
 				ctx,
@@ -1652,6 +1722,163 @@ func (c *Commands) prepareUpdateInstanceAppleProvider(a *instance.Aggregate, wri
 	}
 }
 
+func (c *Commands) prepareAddInstanceSAMLProvider(a *instance.Aggregate, writeModel *InstanceSAMLIDPWriteModel, provider *SAMLProvider) preparation.Validation {
+	return func() (preparation.CreateCommands, error) {
+		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-o07zjotgnd", "Errors.Invalid.Argument")
+		}
+		if len(provider.Metadata) == 0 && provider.MetadataURL != "" {
+			data, err := xml.ReadMetadataFromURL(c.httpClient, provider.MetadataURL)
+			if err != nil {
+				return nil, zerrors.ThrowInvalidArgument(err, "INST-8vam1khq22", "Errors.Project.App.SAMLMetadataMissing")
+			}
+			provider.Metadata = data
+		}
+		if len(provider.Metadata) == 0 {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-3bi3esi16t", "Errors.Invalid.Argument")
+		}
+		if _, err := saml.ParseMetadata(provider.Metadata); err != nil {
+			return nil, zerrors.ThrowInvalidArgument(err, "INST-SF3rwhgh", "Errors.Project.App.SAMLMetadataFormat")
+		}
+		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
+			events, err := filter(ctx, writeModel.Query())
+			if err != nil {
+				return nil, err
+			}
+			writeModel.AppendEvents(events...)
+			if err = writeModel.Reduce(); err != nil {
+				return nil, err
+			}
+
+			key, cert, err := c.samlCertificateAndKeyGenerator(writeModel.ID)
+			if err != nil {
+				return nil, err
+			}
+			keyEnc, err := crypto.Encrypt(key, c.idpConfigEncryption)
+			if err != nil {
+				return nil, err
+			}
+			return []eventstore.Command{
+				instance.NewSAMLIDPAddedEvent(
+					ctx,
+					&a.Aggregate,
+					writeModel.ID,
+					provider.Name,
+					provider.Metadata,
+					keyEnc,
+					cert,
+					provider.Binding,
+					provider.WithSignedRequest,
+					provider.NameIDFormat,
+					provider.TransientMappingAttributeName,
+					provider.IDPOptions,
+				),
+			}, nil
+		}, nil
+	}
+}
+
+func (c *Commands) prepareUpdateInstanceSAMLProvider(a *instance.Aggregate, writeModel *InstanceSAMLIDPWriteModel, provider *SAMLProvider) preparation.Validation {
+	return func() (preparation.CreateCommands, error) {
+		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-7o3rq1owpm", "Errors.Invalid.Argument")
+		}
+		if provider.Name = strings.TrimSpace(provider.Name); provider.Name == "" {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-q2s9rak7o9", "Errors.Invalid.Argument")
+		}
+		if provider.Metadata == nil && provider.MetadataURL == "" {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-iw1rxnf4sf", "Errors.Invalid.Argument")
+		}
+		if provider.Metadata == nil && provider.MetadataURL != "" {
+			data, err := xml.ReadMetadataFromURL(c.httpClient, provider.MetadataURL)
+			if err != nil {
+				return nil, zerrors.ThrowInvalidArgument(err, "INST-iijz4h01if", "Errors.Project.App.SAMLMetadataMissing")
+			}
+			provider.Metadata = data
+		}
+		if _, err := saml.ParseMetadata(provider.Metadata); err != nil {
+			return nil, zerrors.ThrowInvalidArgument(err, "INST-dsfj3kl2", "Errors.Project.App.SAMLMetadataFormat")
+		}
+		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
+			events, err := filter(ctx, writeModel.Query())
+			if err != nil {
+				return nil, err
+			}
+			writeModel.AppendEvents(events...)
+			if err = writeModel.Reduce(); err != nil {
+				return nil, err
+			}
+			if !writeModel.State.Exists() {
+				return nil, zerrors.ThrowNotFound(nil, "INST-D3r1s", "Errors.IDPConfig.NotExisting")
+			}
+			event, err := writeModel.NewChangedEvent(
+				ctx,
+				&a.Aggregate,
+				writeModel.ID,
+				provider.Name,
+				provider.Metadata,
+				nil,
+				nil,
+				c.idpConfigEncryption,
+				provider.Binding,
+				provider.WithSignedRequest,
+				provider.NameIDFormat,
+				provider.TransientMappingAttributeName,
+				provider.IDPOptions,
+			)
+			if err != nil || event == nil {
+				return nil, err
+			}
+			return []eventstore.Command{event}, nil
+		}, nil
+	}
+}
+
+func (c *Commands) prepareRegenerateInstanceSAMLProviderCertificate(a *instance.Aggregate, writeModel *InstanceSAMLIDPWriteModel) preparation.Validation {
+	return func() (preparation.CreateCommands, error) {
+		if writeModel.ID = strings.TrimSpace(writeModel.ID); writeModel.ID == "" {
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-7de108gqya", "Errors.Invalid.Argument")
+		}
+		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
+			events, err := filter(ctx, writeModel.Query())
+			if err != nil {
+				return nil, err
+			}
+			writeModel.AppendEvents(events...)
+			if err = writeModel.Reduce(); err != nil {
+				return nil, err
+			}
+			if !writeModel.State.Exists() {
+				return nil, zerrors.ThrowNotFound(nil, "INST-76dbwsv9vm", "Errors.IDPConfig.NotExisting")
+			}
+
+			key, cert, err := c.samlCertificateAndKeyGenerator(writeModel.ID)
+			if err != nil {
+				return nil, err
+			}
+			event, err := writeModel.NewChangedEvent(
+				ctx,
+				&a.Aggregate,
+				writeModel.ID,
+				writeModel.Name,
+				writeModel.Metadata,
+				key,
+				cert,
+				c.idpConfigEncryption,
+				writeModel.Binding,
+				writeModel.WithSignedRequest,
+				writeModel.NameIDFormat,
+				writeModel.TransientMappingAttributeName,
+				writeModel.Options,
+			)
+			if err != nil || event == nil {
+				return nil, err
+			}
+			return []eventstore.Command{event}, nil
+		}, nil
+	}
+}
+
 func (c *Commands) prepareDeleteInstanceProvider(a *instance.Aggregate, id string) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
@@ -1665,7 +1892,7 @@ func (c *Commands) prepareDeleteInstanceProvider(a *instance.Aggregate, id strin
 				return nil, err
 			}
 			if !writeModel.State.Exists() {
-				return nil, caos_errs.ThrowNotFound(nil, "INST-Se3tg", "Errors.IDPConfig.NotExisting")
+				return nil, zerrors.ThrowNotFound(nil, "INST-Se3tg", "Errors.IDPConfig.NotExisting")
 			}
 			return []eventstore.Command{instance.NewIDPRemovedEvent(ctx, &a.Aggregate, id)}, nil
 		}, nil

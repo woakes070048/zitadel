@@ -13,14 +13,18 @@ import { InfoSectionType } from '../../info-section/info-section.component';
 })
 export class SecurityPolicyComponent implements OnInit {
   public originsList: string[] = [];
-  public enabled: boolean = false;
+  public iframeEnabled: boolean = false;
+  public impersonationEnabled: boolean = false;
 
   public loading: boolean = false;
   public InfoSectionType: any = InfoSectionType;
 
   @Input() public originsControl: UntypedFormControl = new UntypedFormControl({ value: [], disabled: true });
 
-  constructor(private service: AdminService, private toast: ToastService) {}
+  constructor(
+    private service: AdminService,
+    private toast: ToastService,
+  ) {}
 
   ngOnInit(): void {
     this.fetchData();
@@ -29,7 +33,8 @@ export class SecurityPolicyComponent implements OnInit {
   private fetchData(): void {
     this.service.getSecurityPolicy().then((securityPolicy) => {
       if (securityPolicy.policy) {
-        this.enabled = securityPolicy.policy?.enableIframeEmbedding;
+        this.impersonationEnabled = securityPolicy.policy?.enableImpersonation;
+        this.iframeEnabled = securityPolicy.policy?.enableIframeEmbedding;
         this.originsList = securityPolicy.policy?.allowedOriginsList;
         if (securityPolicy.policy.enableIframeEmbedding) {
           this.originsControl.enable();
@@ -43,7 +48,8 @@ export class SecurityPolicyComponent implements OnInit {
   private updateData(): Promise<SetDefaultLanguageResponse.AsObject> {
     const req = new SetSecurityPolicyRequest();
     req.setAllowedOriginsList(this.originsList);
-    req.setEnableIframeEmbedding(this.enabled);
+    req.setEnableIframeEmbedding(this.iframeEnabled);
+    req.setEnableImpersonation(this.impersonationEnabled);
     return (this.service as AdminService).setSecurityPolicy(req);
   }
 
@@ -85,7 +91,7 @@ export class SecurityPolicyComponent implements OnInit {
     }
   }
 
-  public enabledChanged(event: MatCheckboxChange) {
+  public iframeEnabledChanged(event: MatCheckboxChange) {
     if (event.checked) {
       this.originsControl.enable();
     } else {

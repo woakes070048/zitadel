@@ -4,28 +4,26 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/eventstore"
-	"github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/spooler"
+	auth_handler "github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/handler"
 	auth_view "github.com/zitadel/zitadel/internal/auth/repository/eventsourcing/view"
 	"github.com/zitadel/zitadel/internal/auth_request/repository/cache"
 	"github.com/zitadel/zitadel/internal/command"
 	sd "github.com/zitadel/zitadel/internal/config/systemdefaults"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/database"
+	"github.com/zitadel/zitadel/internal/domain"
 	eventstore2 "github.com/zitadel/zitadel/internal/eventstore"
-	v1 "github.com/zitadel/zitadel/internal/eventstore/v1"
-	es_spol "github.com/zitadel/zitadel/internal/eventstore/v1/spooler"
 	"github.com/zitadel/zitadel/internal/id"
 	"github.com/zitadel/zitadel/internal/query"
 )
 
 type Config struct {
-	SearchLimit uint64
-	Spooler     spooler.SpoolerConfig
+	SearchLimit                uint64
+	Spooler                    auth_handler.Config
+	AmountOfCachedAuthRequests uint16
 }
 
 type EsRepository struct {
-	spooler    *es_spol.Spooler
-	Eventstore v1.Eventstore
 	eventstore.UserRepo
 	eventstore.AuthRequestRepo
 	eventstore.TokenRepo
@@ -34,25 +32,20 @@ type EsRepository struct {
 	eventstore.OrgRepository
 }
 
-func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, command *command.Commands, queries *query.Queries, dbClient *database.DB, esV2 *eventstore2.Eventstore, oidcEncryption crypto.EncryptionAlgorithm, userEncryption crypto.EncryptionAlgorithm, allowOrderByCreationDate bool) (*EsRepository, error) {
-	es, err := v1.Start(dbClient, allowOrderByCreationDate)
-	if err != nil {
-		return nil, err
-	}
-	idGenerator := id.SonyFlakeGenerator()
-
-	view, err := auth_view.StartView(dbClient, oidcEncryption, queries, idGenerator, es)
+func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, command *command.Commands, queries *query.Queries, dbClient *database.DB, esV2 *eventstore2.Eventstore, oidcEncryption crypto.EncryptionAlgorithm, userEncryption crypto.EncryptionAlgorithm) (*EsRepository, error) {
+	view, err := auth_view.StartView(dbClient, oidcEncryption, queries, esV2)
 	if err != nil {
 		return nil, err
 	}
 
-	authReq := cache.Start(dbClient)
+	auth_handler.Register(ctx, conf.Spooler, view, queries)
+	auth_handler.Start(ctx)
 
-	spool := spooler.StartSpooler(ctx, conf.Spooler, es, esV2, view, dbClient, queries)
+	authReq := cache.Start(dbClient, conf.AmountOfCachedAuthRequests)
 
 	userRepo := eventstore.UserRepo{
 		SearchLimit:    conf.SearchLimit,
-		Eventstore:     es,
+		Eventstore:     esV2,
 		View:           view,
 		Query:          queries,
 		SystemDefaults: systemDefaults,
@@ -63,8 +56,6 @@ func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, c
 		view,
 	}
 	return &EsRepository{
-		spool,
-		es,
 		userRepo,
 		eventstore.AuthRequestRepo{
 			PrivacyPolicyProvider:     queries,
@@ -74,7 +65,6 @@ func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, c
 			OrgViewProvider:           queries,
 			AuthRequests:              authReq,
 			View:                      view,
-			Eventstore:                es,
 			UserCodeAlg:               userEncryption,
 			UserSessionViewProvider:   view,
 			UserViewProvider:          view,
@@ -84,19 +74,22 @@ func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, c
 			IDPUserLinksProvider:      queries,
 			LockoutPolicyViewProvider: queries,
 			LoginPolicyViewProvider:   queries,
+			PasswordAgePolicyProvider: queries,
 			UserGrantProvider:         queryView,
 			ProjectProvider:           queryView,
 			ApplicationProvider:       queries,
 			CustomTextProvider:        queries,
-			IdGenerator:               idGenerator,
+			PasswordReset:             command,
+			PasswordChecker:           command,
+			IdGenerator:               id.SonyFlakeGenerator(),
 		},
 		eventstore.TokenRepo{
 			View:       view,
-			Eventstore: es,
+			Eventstore: esV2,
 		},
 		eventstore.RefreshTokenRepo{
 			View:         view,
-			Eventstore:   es,
+			Eventstore:   esV2,
 			SearchLimit:  conf.SearchLimit,
 			KeyAlgorithm: oidcEncryption,
 		},
@@ -107,7 +100,7 @@ func Start(ctx context.Context, conf Config, systemDefaults sd.SystemDefaults, c
 			SearchLimit:    conf.SearchLimit,
 			View:           view,
 			SystemDefaults: systemDefaults,
-			Eventstore:     es,
+			Eventstore:     esV2,
 			Query:          queries,
 		},
 	}, nil
@@ -127,8 +120,12 @@ func (q queryViewWrapper) UserGrantsByProjectAndUserID(ctx context.Context, proj
 	if err != nil {
 		return nil, err
 	}
-	queries := &query.UserGrantsQueries{Queries: []query.SearchQuery{userGrantUserID, userGrantProjectID}}
-	grants, err := q.Queries.UserGrants(ctx, queries, true, false)
+	activeQuery, err := query.NewUserGrantStateQuery(domain.UserGrantStateActive)
+	if err != nil {
+		return nil, err
+	}
+	queries := &query.UserGrantsQueries{Queries: []query.SearchQuery{userGrantUserID, userGrantProjectID, activeQuery}}
+	grants, err := q.Queries.UserGrants(ctx, queries, true)
 	if err != nil {
 		return nil, err
 	}

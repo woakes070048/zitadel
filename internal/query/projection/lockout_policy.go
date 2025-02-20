@@ -4,17 +4,17 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
+	old_handler "github.com/zitadel/zitadel/internal/eventstore/handler"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/policy"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
-	LockoutPolicyTable = "projections.lockout_policies2"
+	LockoutPolicyTable = "projections.lockout_policies3"
 
 	LockoutPolicyIDCol                  = "id"
 	LockoutPolicyCreationDateCol        = "creation_date"
@@ -25,45 +25,45 @@ const (
 	LockoutPolicyResourceOwnerCol       = "resource_owner"
 	LockoutPolicyInstanceIDCol          = "instance_id"
 	LockoutPolicyMaxPasswordAttemptsCol = "max_password_attempts"
+	LockoutPolicyMaxOTPAttemptsCol      = "max_otp_attempts"
 	LockoutPolicyShowLockOutFailuresCol = "show_failure"
-	LockoutPolicyOwnerRemovedCol        = "owner_removed"
 )
 
-type lockoutPolicyProjection struct {
-	crdb.StatementHandler
+type lockoutPolicyProjection struct{}
+
+func newLockoutPolicyProjection(ctx context.Context, config handler.Config) *handler.Handler {
+	return handler.NewHandler(ctx, &config, new(lockoutPolicyProjection))
 }
 
-func newLockoutPolicyProjection(ctx context.Context, config crdb.StatementHandlerConfig) *lockoutPolicyProjection {
-	p := new(lockoutPolicyProjection)
-	config.ProjectionName = LockoutPolicyTable
-	config.Reducers = p.reducers()
-	config.InitCheck = crdb.NewTableCheck(
-		crdb.NewTable([]*crdb.Column{
-			crdb.NewColumn(LockoutPolicyIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(LockoutPolicyCreationDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(LockoutPolicyChangeDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(LockoutPolicySequenceCol, crdb.ColumnTypeInt64),
-			crdb.NewColumn(LockoutPolicyStateCol, crdb.ColumnTypeEnum),
-			crdb.NewColumn(LockoutPolicyIsDefaultCol, crdb.ColumnTypeBool, crdb.Default(false)),
-			crdb.NewColumn(LockoutPolicyResourceOwnerCol, crdb.ColumnTypeText),
-			crdb.NewColumn(LockoutPolicyInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(LockoutPolicyMaxPasswordAttemptsCol, crdb.ColumnTypeInt64),
-			crdb.NewColumn(LockoutPolicyShowLockOutFailuresCol, crdb.ColumnTypeBool),
-			crdb.NewColumn(LockoutPolicyOwnerRemovedCol, crdb.ColumnTypeBool, crdb.Default(false)),
+func (*lockoutPolicyProjection) Name() string {
+	return LockoutPolicyTable
+}
+
+func (*lockoutPolicyProjection) Init() *old_handler.Check {
+	return handler.NewTableCheck(
+		handler.NewTable([]*handler.InitColumn{
+			handler.NewColumn(LockoutPolicyIDCol, handler.ColumnTypeText),
+			handler.NewColumn(LockoutPolicyCreationDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(LockoutPolicyChangeDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(LockoutPolicySequenceCol, handler.ColumnTypeInt64),
+			handler.NewColumn(LockoutPolicyStateCol, handler.ColumnTypeEnum),
+			handler.NewColumn(LockoutPolicyIsDefaultCol, handler.ColumnTypeBool, handler.Default(false)),
+			handler.NewColumn(LockoutPolicyResourceOwnerCol, handler.ColumnTypeText),
+			handler.NewColumn(LockoutPolicyInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(LockoutPolicyMaxPasswordAttemptsCol, handler.ColumnTypeInt64),
+			handler.NewColumn(LockoutPolicyMaxOTPAttemptsCol, handler.ColumnTypeInt64, handler.Default(0)),
+			handler.NewColumn(LockoutPolicyShowLockOutFailuresCol, handler.ColumnTypeBool),
 		},
-			crdb.NewPrimaryKey(LockoutPolicyInstanceIDCol, LockoutPolicyIDCol),
-			crdb.WithIndex(crdb.NewIndex("owner_removed", []string{LockoutPolicyOwnerRemovedCol})),
+			handler.NewPrimaryKey(LockoutPolicyInstanceIDCol, LockoutPolicyIDCol),
 		),
 	)
-	p.StatementHandler = crdb.NewStatementHandler(ctx, config)
-	return p
 }
 
-func (p *lockoutPolicyProjection) reducers() []handler.AggregateReducer {
+func (p *lockoutPolicyProjection) Reducers() []handler.AggregateReducer {
 	return []handler.AggregateReducer{
 		{
 			Aggregate: org.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  org.LockoutPolicyAddedEventType,
 					Reduce: p.reduceAdded,
@@ -84,7 +84,7 @@ func (p *lockoutPolicyProjection) reducers() []handler.AggregateReducer {
 		},
 		{
 			Aggregate: instance.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  instance.LockoutPolicyAddedEventType,
 					Reduce: p.reduceAdded,
@@ -113,9 +113,9 @@ func (p *lockoutPolicyProjection) reduceAdded(event eventstore.Event) (*handler.
 		policyEvent = e.LockoutPolicyAddedEvent
 		isDefault = true
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-d8mZO", "reduce.wrong.event.type, %v", []eventstore.EventType{org.LockoutPolicyAddedEventType, instance.LockoutPolicyAddedEventType})
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-d8mZO", "reduce.wrong.event.type, %v", []eventstore.EventType{org.LockoutPolicyAddedEventType, instance.LockoutPolicyAddedEventType})
 	}
-	return crdb.NewCreateStatement(
+	return handler.NewCreateStatement(
 		&policyEvent,
 		[]handler.Column{
 			handler.NewCol(LockoutPolicyCreationDateCol, policyEvent.CreationDate()),
@@ -124,6 +124,7 @@ func (p *lockoutPolicyProjection) reduceAdded(event eventstore.Event) (*handler.
 			handler.NewCol(LockoutPolicyIDCol, policyEvent.Aggregate().ID),
 			handler.NewCol(LockoutPolicyStateCol, domain.PolicyStateActive),
 			handler.NewCol(LockoutPolicyMaxPasswordAttemptsCol, policyEvent.MaxPasswordAttempts),
+			handler.NewCol(LockoutPolicyMaxOTPAttemptsCol, policyEvent.MaxOTPAttempts),
 			handler.NewCol(LockoutPolicyShowLockOutFailuresCol, policyEvent.ShowLockOutFailures),
 			handler.NewCol(LockoutPolicyIsDefaultCol, isDefault),
 			handler.NewCol(LockoutPolicyResourceOwnerCol, policyEvent.Aggregate().ResourceOwner),
@@ -139,7 +140,7 @@ func (p *lockoutPolicyProjection) reduceChanged(event eventstore.Event) (*handle
 	case *instance.LockoutPolicyChangedEvent:
 		policyEvent = e.LockoutPolicyChangedEvent
 	default:
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-pT3mQ", "reduce.wrong.event.type, %v", []eventstore.EventType{org.LockoutPolicyChangedEventType, instance.LockoutPolicyChangedEventType})
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-pT3mQ", "reduce.wrong.event.type, %v", []eventstore.EventType{org.LockoutPolicyChangedEventType, instance.LockoutPolicyChangedEventType})
 	}
 	cols := []handler.Column{
 		handler.NewCol(LockoutPolicyChangeDateCol, policyEvent.CreationDate()),
@@ -148,10 +149,13 @@ func (p *lockoutPolicyProjection) reduceChanged(event eventstore.Event) (*handle
 	if policyEvent.MaxPasswordAttempts != nil {
 		cols = append(cols, handler.NewCol(LockoutPolicyMaxPasswordAttemptsCol, *policyEvent.MaxPasswordAttempts))
 	}
+	if policyEvent.MaxOTPAttempts != nil {
+		cols = append(cols, handler.NewCol(LockoutPolicyMaxOTPAttemptsCol, *policyEvent.MaxOTPAttempts))
+	}
 	if policyEvent.ShowLockOutFailures != nil {
 		cols = append(cols, handler.NewCol(LockoutPolicyShowLockOutFailuresCol, *policyEvent.ShowLockOutFailures))
 	}
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		&policyEvent,
 		cols,
 		[]handler.Condition{
@@ -163,9 +167,9 @@ func (p *lockoutPolicyProjection) reduceChanged(event eventstore.Event) (*handle
 func (p *lockoutPolicyProjection) reduceRemoved(event eventstore.Event) (*handler.Statement, error) {
 	policyEvent, ok := event.(*org.LockoutPolicyRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-Bqut9", "reduce.wrong.event.type %s", org.LockoutPolicyRemovedEventType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-Bqut9", "reduce.wrong.event.type %s", org.LockoutPolicyRemovedEventType)
 	}
-	return crdb.NewDeleteStatement(
+	return handler.NewDeleteStatement(
 		policyEvent,
 		[]handler.Condition{
 			handler.NewCond(LockoutPolicyIDCol, policyEvent.Aggregate().ID),
@@ -176,10 +180,10 @@ func (p *lockoutPolicyProjection) reduceRemoved(event eventstore.Event) (*handle
 func (p *lockoutPolicyProjection) reduceOwnerRemoved(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*org.OrgRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "PROJE-IoW0x", "reduce.wrong.event.type %s", org.OrgRemovedEventType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-IoW0x", "reduce.wrong.event.type %s", org.OrgRemovedEventType)
 	}
 
-	return crdb.NewDeleteStatement(
+	return handler.NewDeleteStatement(
 		e,
 		[]handler.Condition{
 			handler.NewCond(LockoutPolicyInstanceIDCol, e.Aggregate().InstanceID),

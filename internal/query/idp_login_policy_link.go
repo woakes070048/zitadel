@@ -9,16 +9,21 @@ import (
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type IDPLoginPolicyLink struct {
-	IDPID     string
-	IDPName   string
-	IDPType   domain.IDPType
-	OwnerType domain.IdentityProviderType
+	IDPID             string
+	IDPName           string
+	IDPType           domain.IDPType
+	OwnerType         domain.IdentityProviderType
+	IsCreationAllowed bool
+	IsLinkingAllowed  bool
+	IsAutoCreation    bool
+	IsAutoUpdate      bool
+	AutoLinking       domain.AutoLinkingOption
 }
 
 type IDPLoginPolicyLinks struct {
@@ -103,7 +108,7 @@ func (q *Queries) IDPLoginPolicyLinks(ctx context.Context, resourceOwner string,
 
 	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-FDbKW", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-FDbKW", "Errors.Query.InvalidRequest")
 	}
 
 	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
@@ -111,9 +116,9 @@ func (q *Queries) IDPLoginPolicyLinks(ctx context.Context, resourceOwner string,
 		return err
 	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-ZkKUc", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-ZkKUc", "Errors.Internal")
 	}
-	idps.LatestSequence, err = q.latestSequence(ctx, idpLoginPolicyLinkTable)
+	idps.State, err = q.latestState(ctx, idpLoginPolicyLinkTable)
 	return idps, err
 }
 
@@ -127,6 +132,11 @@ func prepareIDPLoginPolicyLinksQuery(ctx context.Context, db prepareDatabase, re
 			IDPTemplateNameCol.identifier(),
 			IDPTemplateTypeCol.identifier(),
 			IDPTemplateOwnerTypeCol.identifier(),
+			IDPTemplateIsCreationAllowedCol.identifier(),
+			IDPTemplateIsLinkingAllowedCol.identifier(),
+			IDPTemplateIsAutoCreationCol.identifier(),
+			IDPTemplateIsAutoUpdateCol.identifier(),
+			IDPTemplateAutoLinkingCol.identifier(),
 			countColumn.identifier()).
 			From(idpLoginPolicyLinkTable.identifier()).
 			LeftJoin(join(IDPTemplateIDCol, IDPLoginPolicyLinkIDPIDCol)).
@@ -141,34 +151,65 @@ func prepareIDPLoginPolicyLinksQuery(ctx context.Context, db prepareDatabase, re
 			var count uint64
 			for rows.Next() {
 				var (
-					idpName      = sql.NullString{}
-					idpType      = sql.NullInt16{}
-					idpOwnerType = sql.NullInt16{}
-					link         = new(IDPLoginPolicyLink)
+					idpName           = sql.NullString{}
+					idpType           = sql.NullInt16{}
+					idpOwnerType      = sql.NullInt16{}
+					link              = new(IDPLoginPolicyLink)
+					isCreationAllowed = sql.NullBool{}
+					isLinkingAllowed  = sql.NullBool{}
+					isAutoCreation    = sql.NullBool{}
+					isAutoUpdate      = sql.NullBool{}
+					autoLinking       = sql.NullInt16{}
 				)
 				err := rows.Scan(
 					&link.IDPID,
 					&idpName,
 					&idpType,
 					&idpOwnerType,
+					&isCreationAllowed,
+					&isLinkingAllowed,
+					&isAutoCreation,
+					&isAutoUpdate,
+					&autoLinking,
 					&count,
 				)
 				if err != nil {
 					return nil, err
 				}
-				link.IDPName = idpName.String
+				if idpName.Valid {
+					link.IDPName = idpName.String
+				}
 				//IDPType 0 is oidc so we have to set unspecified manually
 				if idpType.Valid {
 					link.IDPType = domain.IDPType(idpType.Int16)
 				} else {
 					link.IDPType = domain.IDPTypeUnspecified
 				}
-				link.OwnerType = domain.IdentityProviderType(idpOwnerType.Int16)
+				if idpOwnerType.Valid {
+					link.OwnerType = domain.IdentityProviderType(idpOwnerType.Int16)
+				}
+				if isCreationAllowed.Valid {
+					link.IsCreationAllowed = isCreationAllowed.Bool
+				}
+				if isLinkingAllowed.Valid {
+					link.IsLinkingAllowed = isLinkingAllowed.Bool
+				}
+				if isAutoCreation.Valid {
+					link.IsAutoCreation = isAutoCreation.Bool
+				}
+				if isAutoUpdate.Valid {
+					link.IsAutoUpdate = isAutoUpdate.Bool
+				}
+				if autoLinking.Valid {
+					link.AutoLinking = domain.AutoLinkingOption(autoLinking.Int16)
+				} else {
+					link.AutoLinking = domain.AutoLinkingOptionUnspecified
+				}
 				links = append(links, link)
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-vOLFG", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-vOLFG", "Errors.Query.CloseRows")
 			}
 
 			return &IDPLoginPolicyLinks{

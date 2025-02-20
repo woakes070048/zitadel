@@ -2,74 +2,123 @@ package handlers
 
 import (
 	"context"
-	"strings"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
+	http_util "github.com/zitadel/zitadel/internal/api/http"
+	"github.com/zitadel/zitadel/internal/api/ui/console"
 	"github.com/zitadel/zitadel/internal/api/ui/login"
 	"github.com/zitadel/zitadel/internal/command"
-	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	"github.com/zitadel/zitadel/internal/notification/senders"
 	"github.com/zitadel/zitadel/internal/notification/types"
-	"github.com/zitadel/zitadel/internal/query"
-	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/repository/session"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
+
+func init() {
+	RegisterSentHandler(user.HumanInitialCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, _ *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanInitCodeSent(ctx, orgID, id)
+		},
+	)
+	RegisterSentHandler(user.HumanEmailCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanEmailVerificationCodeSent(ctx, orgID, id)
+		},
+	)
+	RegisterSentHandler(user.HumanPasswordCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.PasswordCodeSent(ctx, orgID, id, generatorInfo)
+		},
+	)
+	RegisterSentHandler(user.HumanOTPSMSCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanOTPSMSCodeSent(ctx, id, orgID, generatorInfo)
+		},
+	)
+	RegisterSentHandler(session.OTPSMSChallengedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.OTPSMSSent(ctx, id, orgID, generatorInfo)
+		},
+	)
+	RegisterSentHandler(user.HumanOTPEmailCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanOTPEmailCodeSent(ctx, id, orgID)
+		},
+	)
+	RegisterSentHandler(session.OTPEmailChallengedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.OTPEmailSent(ctx, id, orgID)
+		},
+	)
+	RegisterSentHandler(user.UserDomainClaimedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.UserDomainClaimedSent(ctx, orgID, id)
+		},
+	)
+	RegisterSentHandler(user.HumanPasswordlessInitCodeRequestedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanPasswordlessInitCodeSent(ctx, id, orgID, args["CodeID"].(string))
+		},
+	)
+	RegisterSentHandler(user.HumanPasswordChangedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.PasswordChangeSent(ctx, orgID, id)
+		},
+	)
+	RegisterSentHandler(user.HumanPhoneCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, generatorInfo *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.HumanPhoneVerificationCodeSent(ctx, orgID, id, generatorInfo)
+		},
+	)
+	RegisterSentHandler(user.HumanInviteCodeAddedType,
+		func(ctx context.Context, commands Commands, id, orgID string, _ *senders.CodeGeneratorInfo, args map[string]any) error {
+			return commands.InviteCodeSent(ctx, orgID, id)
+		},
+	)
+}
 
 const (
 	UserNotificationsProjectionTable = "projections.notifications"
 )
 
 type userNotifier struct {
-	crdb.StatementHandler
-	commands     *command.Commands
+	commands     Commands
 	queries      *NotificationQueries
-	assetsPrefix func(context.Context) string
 	otpEmailTmpl string
-	metricSuccessfulDeliveriesEmail,
-	metricFailedDeliveriesEmail,
-	metricSuccessfulDeliveriesSMS,
-	metricFailedDeliveriesSMS string
 }
 
 func NewUserNotifier(
 	ctx context.Context,
-	config crdb.StatementHandlerConfig,
-	commands *command.Commands,
+	config handler.Config,
+	commands Commands,
 	queries *NotificationQueries,
-	assetsPrefix func(context.Context) string,
+	channels types.ChannelChains,
 	otpEmailTmpl string,
-	metricSuccessfulDeliveriesEmail,
-	metricFailedDeliveriesEmail,
-	metricSuccessfulDeliveriesSMS,
-	metricFailedDeliveriesSMS string,
-) *userNotifier {
-	p := new(userNotifier)
-	config.ProjectionName = UserNotificationsProjectionTable
-	config.Reducers = p.reducers()
-	p.StatementHandler = crdb.NewStatementHandler(ctx, config)
-	p.commands = commands
-	p.queries = queries
-	p.assetsPrefix = assetsPrefix
-	p.otpEmailTmpl = otpEmailTmpl
-	p.metricSuccessfulDeliveriesEmail = metricSuccessfulDeliveriesEmail
-	p.metricFailedDeliveriesEmail = metricFailedDeliveriesEmail
-	p.metricSuccessfulDeliveriesSMS = metricSuccessfulDeliveriesSMS
-	p.metricFailedDeliveriesSMS = metricFailedDeliveriesSMS
-	projection.NotificationsProjection = p
-	return p
+	legacyMode bool,
+) *handler.Handler {
+	if legacyMode {
+		return NewUserNotifierLegacy(ctx, config, commands, queries, channels, otpEmailTmpl)
+	}
+	return handler.NewHandler(ctx, &config, &userNotifier{
+		commands:     commands,
+		queries:      queries,
+		otpEmailTmpl: otpEmailTmpl,
+	})
 }
 
-func (u *userNotifier) reducers() []handler.AggregateReducer {
+func (u *userNotifier) Name() string {
+	return UserNotificationsProjectionTable
+}
+
+func (u *userNotifier) Reducers() []handler.AggregateReducer {
 	return []handler.AggregateReducer{
 		{
 			Aggregate: user.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  user.UserV1InitialCodeAddedType,
 					Reduce: u.reduceInitCodeAdded,
@@ -122,11 +171,15 @@ func (u *userNotifier) reducers() []handler.AggregateReducer {
 					Event:  user.HumanOTPEmailCodeAddedType,
 					Reduce: u.reduceOTPEmailCodeAdded,
 				},
+				{
+					Event:  user.HumanInviteCodeAddedType,
+					Reduce: u.reduceInviteCodeAdded,
+				},
 			},
 		},
 		{
 			Aggregate: session.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  session.OTPSMSChallengedType,
 					Reduce: u.reduceSessionOTPSMSChallenged,
@@ -143,730 +196,596 @@ func (u *userNotifier) reducers() []handler.AggregateReducer {
 func (u *userNotifier) reduceInitCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanInitialCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-EFe2f", "reduce.wrong.event.type %s", user.HumanInitialCodeAddedType)
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
-		user.UserV1InitialCodeAddedType, user.UserV1InitialCodeSentType,
-		user.HumanInitialCodeAddedType, user.HumanInitialCodeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	code, err := crypto.DecryptString(e.Code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-EFe2f", "reduce.wrong.event.type %s", user.HumanInitialCodeAddedType)
 	}
 
-	template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
-
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.InitCodeMessageType)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	err = types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	).SendUserInitCode(notifyUser, origin, code)
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.HumanInitCodeSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.UserV1InitialCodeAddedType, user.UserV1InitialCodeSentType,
+			user.HumanInitialCodeAddedType, user.HumanInitialCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+		return u.commands.RequestNotification(
+			ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.InitCodeMessageType,
+			).
+				WithURLTemplate(login.InitUserLinkTemplate(origin, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.AuthRequestID)).
+				WithCode(e.Code, e.Expiry).
+				WithArgs(&domain.NotificationArguments{
+					AuthRequestID: e.AuthRequestID,
+				}).
+				WithUnverifiedChannel(),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reduceEmailCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanEmailCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-SWf3g", "reduce.wrong.event.type %s", user.HumanEmailCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-SWf3g", "reduce.wrong.event.type %s", user.HumanEmailCodeAddedType)
 	}
 
 	if e.CodeReturned {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
-		user.UserV1EmailCodeAddedType, user.UserV1EmailCodeSentType,
-		user.HumanEmailCodeAddedType, user.HumanEmailCodeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	code, err := crypto.DecryptString(e.Code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.UserV1EmailCodeAddedType, user.UserV1EmailCodeSentType,
+			user.HumanEmailCodeAddedType, user.HumanEmailCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
 
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.VerifyEmailMessageType)
-	if err != nil {
-		return nil, err
-	}
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.VerifyEmailMessageType,
+			).
+				WithURLTemplate(u.emailCodeTemplate(origin, e)).
+				WithCode(e.Code, e.Expiry).
+				WithArgs(&domain.NotificationArguments{
+					AuthRequestID: e.AuthRequestID,
+				}).
+				WithUnverifiedChannel(),
+		)
+	}), nil
+}
 
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
+func (u *userNotifier) emailCodeTemplate(origin string, e *user.HumanEmailCodeAddedEvent) string {
+	if e.URLTemplate != "" {
+		return e.URLTemplate
 	}
-	err = types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	).SendEmailVerificationCode(notifyUser, origin, code, e.URLTemplate)
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.HumanEmailVerificationCodeSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return login.MailVerificationLinkTemplate(origin, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.AuthRequestID)
 }
 
 func (u *userNotifier) reducePasswordCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPasswordCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Eeg3s", "reduce.wrong.event.type %s", user.HumanPasswordCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Eeg3s", "reduce.wrong.event.type %s", user.HumanPasswordCodeAddedType)
 	}
 	if e.CodeReturned {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
-		user.UserV1PasswordCodeAddedType, user.UserV1PasswordCodeSentType,
-		user.HumanPasswordCodeAddedType, user.HumanPasswordCodeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	code, err := crypto.DecryptString(e.Code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
-
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.PasswordResetMessageType)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	notify := types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	)
-	if e.NotificationType == domain.NotificationTypeSms {
-		notify = types.SendSMSTwilio(
-			ctx,
-			translator,
-			notifyUser,
-			u.queries.GetTwilioConfig,
-			u.queries.GetFileSystemProvider,
-			u.queries.GetLogProvider,
-			colors,
-			u.assetsPrefix(ctx),
-			e,
-			u.metricSuccessfulDeliveriesSMS,
-			u.metricFailedDeliveriesSMS,
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.UserV1PasswordCodeAddedType, user.UserV1PasswordCodeSentType,
+			user.HumanPasswordCodeAddedType, user.HumanPasswordCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				e.NotificationType,
+				domain.PasswordResetMessageType,
+			).
+				WithURLTemplate(u.passwordCodeTemplate(origin, e)).
+				WithCode(e.Code, e.Expiry).
+				WithArgs(&domain.NotificationArguments{
+					AuthRequestID: e.AuthRequestID,
+				}).
+				WithUnverifiedChannel(),
 		)
+	}), nil
+}
+
+func (u *userNotifier) passwordCodeTemplate(origin string, e *user.HumanPasswordCodeAddedEvent) string {
+	if e.URLTemplate != "" {
+		return e.URLTemplate
 	}
-	err = notify.SendPasswordCode(notifyUser, origin, code, e.URLTemplate)
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.PasswordCodeSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return login.InitPasswordLinkTemplate(origin, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.AuthRequestID)
 }
 
 func (u *userNotifier) reduceOTPSMSCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanOTPSMSCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-ASF3g", "reduce.wrong.event.type %s", user.HumanOTPSMSCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-ASF3g", "reduce.wrong.event.type %s", user.HumanOTPSMSCodeAddedType)
 	}
-	return u.reduceOTPSMS(
-		e,
-		e.Code,
-		e.Expiry,
-		e.Aggregate().ID,
-		e.Aggregate().ResourceOwner,
-		u.commands.HumanOTPSMSCodeSent,
-		user.HumanOTPSMSCodeAddedType,
-		user.HumanOTPSMSCodeSentType,
-	)
+
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.HumanOTPSMSCodeAddedType,
+			user.HumanOTPSMSCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				http_util.DomainContext(ctx).Origin(),
+				e.EventType,
+				domain.NotificationTypeSms,
+				domain.VerifySMSOTPMessageType,
+			).
+				WithCode(e.Code, e.Expiry).
+				WithArgs(otpArgs(ctx, e.Expiry)).
+				WithOTP(),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reduceSessionOTPSMSChallenged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*session.OTPSMSChallengedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Sk32L", "reduce.wrong.event.type %s", session.OTPSMSChallengedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Sk32L", "reduce.wrong.event.type %s", session.OTPSMSChallengedType)
 	}
 	if e.CodeReturned {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	ctx := HandlerContext(event.Aggregate())
-	s, err := u.queries.SessionByID(ctx, true, e.Aggregate().ID, "")
-	if err != nil {
-		return nil, err
-	}
-	return u.reduceOTPSMS(
-		e,
-		e.Code,
-		e.Expiry,
-		s.UserFactor.UserID,
-		s.UserFactor.ResourceOwner,
-		u.commands.OTPSMSSent,
-		session.OTPSMSChallengedType,
-		session.OTPSMSSentType,
-	)
-}
-
-func (u *userNotifier) reduceOTPSMS(
-	event eventstore.Event,
-	code *crypto.CryptoValue,
-	expiry time.Duration,
-	userID,
-	resourceOwner string,
-	sentCommand func(ctx context.Context, userID string, resourceOwner string) (err error),
-	eventTypes ...eventstore.EventType,
-) (*handler.Statement, error) {
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, expiry, nil, eventTypes...)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(event), nil
-	}
-	plainCode, err := crypto.DecryptString(code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, resourceOwner, false)
-	if err != nil {
-		return nil, err
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, userID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.VerifySMSOTPMessageType)
-	if err != nil {
-		return nil, err
-	}
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			session.OTPSMSChallengedType,
+			session.OTPSMSSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		s, err := u.queries.SessionByID(ctx, true, e.Aggregate().ID, "", nil)
+		if err != nil {
+			return err
+		}
 
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	notify := types.SendSMSTwilio(
-		ctx,
-		translator,
-		notifyUser,
-		u.queries.GetTwilioConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		event,
-		u.metricSuccessfulDeliveriesSMS,
-		u.metricFailedDeliveriesSMS,
-	)
-	err = notify.SendOTPSMSCode(authz.GetInstance(ctx).RequestedDomain(), origin, plainCode, expiry)
-	if err != nil {
-		return nil, err
-	}
-	err = sentCommand(ctx, userID, resourceOwner)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(event), nil
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+
+		args := otpArgs(ctx, e.Expiry)
+		args.SessionID = e.Aggregate().ID
+		return u.commands.RequestNotification(ctx,
+			s.UserFactor.ResourceOwner,
+			command.NewNotificationRequest(
+				s.UserFactor.UserID,
+				s.UserFactor.ResourceOwner,
+				http_util.DomainContext(ctx).Origin(),
+				e.EventType,
+				domain.NotificationTypeSms,
+				domain.VerifySMSOTPMessageType,
+			).
+				WithAggregate(e.Aggregate().ID, e.Aggregate().ResourceOwner).
+				WithCode(e.Code, e.Expiry).
+				WithOTP().
+				WithArgs(args),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reduceOTPEmailCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanOTPEmailCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-JL3hw", "reduce.wrong.event.type %s", user.HumanOTPEmailCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-JL3hw", "reduce.wrong.event.type %s", user.HumanOTPEmailCodeAddedType)
 	}
-	var authRequestID string
-	if e.AuthRequestInfo != nil {
-		authRequestID = e.AuthRequestInfo.ID
-	}
-	url := func(code, origin string, _ *query.NotifyUser) (string, error) {
-		return login.OTPLink(origin, authRequestID, code, domain.MFATypeOTPEmail), nil
-	}
-	return u.reduceOTPEmail(
-		e,
-		e.Code,
-		e.Expiry,
-		e.Aggregate().ID,
-		e.Aggregate().ResourceOwner,
-		url,
-		u.commands.HumanOTPEmailCodeSent,
-		user.HumanOTPEmailCodeAddedType,
-		user.HumanOTPEmailCodeSentType,
-	)
+
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.HumanOTPEmailCodeAddedType,
+			user.HumanOTPEmailCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+		var authRequestID string
+		if e.AuthRequestInfo != nil {
+			authRequestID = e.AuthRequestInfo.ID
+		}
+		args := otpArgs(ctx, e.Expiry)
+		args.AuthRequestID = authRequestID
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.VerifyEmailOTPMessageType,
+			).
+				WithURLTemplate(login.OTPLinkTemplate(origin, authRequestID, domain.MFATypeOTPEmail)).
+				WithCode(e.Code, e.Expiry).
+				WithOTP().
+				WithArgs(args),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reduceSessionOTPEmailChallenged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*session.OTPEmailChallengedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-zbsgt", "reduce.wrong.event.type %s", session.OTPEmailChallengedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-zbsgt", "reduce.wrong.event.type %s", session.OTPEmailChallengedType)
 	}
 	if e.ReturnCode {
-		return crdb.NewNoOpStatement(e), nil
+		return handler.NewNoOpStatement(e), nil
 	}
-	ctx := HandlerContext(event.Aggregate())
-	s, err := u.queries.SessionByID(ctx, true, e.Aggregate().ID, "")
-	if err != nil {
-		return nil, err
-	}
-	url := func(code, origin string, user *query.NotifyUser) (string, error) {
-		var buf strings.Builder
-		urlTmpl := origin + u.otpEmailTmpl
-		if e.URLTmpl != "" {
-			urlTmpl = e.URLTmpl
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			session.OTPEmailChallengedType,
+			session.OTPEmailSentType)
+		if err != nil {
+			return err
 		}
-		if err := domain.RenderOTPEmailURLTemplate(&buf, urlTmpl, code, user.ID, user.PreferredLoginName, user.DisplayName, user.PreferredLanguage); err != nil {
-			return "", err
+		if alreadyHandled {
+			return nil
 		}
-		return buf.String(), nil
-	}
-	return u.reduceOTPEmail(
-		e,
-		e.Code,
-		e.Expiry,
-		s.UserFactor.UserID,
-		s.UserFactor.ResourceOwner,
-		url,
-		u.commands.OTPEmailSent,
-		user.HumanOTPEmailCodeAddedType,
-		user.HumanOTPEmailCodeSentType,
-	)
+		s, err := u.queries.SessionByID(ctx, true, e.Aggregate().ID, "", nil)
+		if err != nil {
+			return err
+		}
+
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+
+		args := otpArgs(ctx, e.Expiry)
+		args.SessionID = e.Aggregate().ID
+		return u.commands.RequestNotification(ctx,
+			s.UserFactor.ResourceOwner,
+			command.NewNotificationRequest(
+				s.UserFactor.UserID,
+				s.UserFactor.ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.VerifyEmailOTPMessageType,
+			).
+				WithAggregate(e.Aggregate().ID, e.Aggregate().ResourceOwner).
+				WithURLTemplate(u.otpEmailTemplate(origin, e)).
+				WithCode(e.Code, e.Expiry).
+				WithOTP().
+				WithArgs(args),
+		)
+	}), nil
 }
 
-func (u *userNotifier) reduceOTPEmail(
-	event eventstore.Event,
-	code *crypto.CryptoValue,
-	expiry time.Duration,
-	userID,
-	resourceOwner string,
-	urlTmpl func(code, origin string, user *query.NotifyUser) (string, error),
-	sentCommand func(ctx context.Context, userID string, resourceOwner string) (err error),
-	eventTypes ...eventstore.EventType,
-) (*handler.Statement, error) {
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, expiry, nil, eventTypes...)
-	if err != nil {
-		return nil, err
+func (u *userNotifier) otpEmailTemplate(origin string, e *session.OTPEmailChallengedEvent) string {
+	if e.URLTmpl != "" {
+		return e.URLTmpl
 	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(event), nil
-	}
-	plainCode, err := crypto.DecryptString(code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, resourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
+	return origin + u.otpEmailTmpl
+}
 
-	template, err := u.queries.MailTemplateByOrg(ctx, resourceOwner, false)
-	if err != nil {
-		return nil, err
+func otpArgs(ctx context.Context, expiry time.Duration) *domain.NotificationArguments {
+	domainCtx := http_util.DomainContext(ctx)
+	return &domain.NotificationArguments{
+		Origin: domainCtx.Origin(),
+		Domain: domainCtx.RequestedDomain(),
+		Expiry: expiry,
 	}
-
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, userID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, resourceOwner, domain.VerifyEmailOTPMessageType)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	url, err := urlTmpl(plainCode, origin, notifyUser)
-	if err != nil {
-		return nil, err
-	}
-	notify := types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		event,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	)
-	err = notify.SendOTPEmailCode(notifyUser, url, authz.GetInstance(ctx).RequestedDomain(), origin, plainCode, expiry)
-	if err != nil {
-		return nil, err
-	}
-	err = sentCommand(ctx, event.Aggregate().ID, event.Aggregate().ResourceOwner)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(event), nil
 }
 
 func (u *userNotifier) reduceDomainClaimed(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.DomainClaimedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Drh5w", "reduce.wrong.event.type %s", user.UserDomainClaimedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Drh5w", "reduce.wrong.event.type %s", user.UserDomainClaimedType)
 	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.queries.IsAlreadyHandled(ctx, event, nil, user.AggregateType,
-		user.UserDomainClaimedType, user.UserDomainClaimedSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
-
-	template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
-
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
-	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.DomainClaimedMessageType)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	err = types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	).SendDomainClaimed(notifyUser, origin, e.UserName)
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.UserDomainClaimedSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.queries.IsAlreadyHandled(ctx, event, nil,
+			user.UserDomainClaimedType, user.UserDomainClaimedSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.DomainClaimedMessageType,
+			).
+				WithURLTemplate(login.LoginLink(origin, e.Aggregate().ResourceOwner)).
+				WithUnverifiedChannel().
+				WithPreviousDomain().
+				WithArgs(&domain.NotificationArguments{
+					TempUsername: e.UserName,
+				}),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reducePasswordlessCodeRequested(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPasswordlessInitCodeRequestedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-EDtjd", "reduce.wrong.event.type %s", user.HumanPasswordlessInitCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-EDtjd", "reduce.wrong.event.type %s", user.HumanPasswordlessInitCodeAddedType)
 	}
 	if e.CodeReturned {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, map[string]interface{}{"id": e.ID}, user.HumanPasswordlessInitCodeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	code, err := crypto.DecryptString(e.Code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
-	}
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, map[string]interface{}{"id": e.ID}, user.HumanPasswordlessInitCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.PasswordlessRegistrationMessageType,
+			).
+				WithURLTemplate(u.passwordlessCodeTemplate(origin, e)).
+				WithCode(e.Code, e.Expiry).
+				WithArgs(&domain.NotificationArguments{
+					CodeID: e.ID,
+				}),
+		)
+	}), nil
+}
 
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
+func (u *userNotifier) passwordlessCodeTemplate(origin string, e *user.HumanPasswordlessInitCodeRequestedEvent) string {
+	if e.URLTemplate != "" {
+		return e.URLTemplate
 	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.PasswordlessRegistrationMessageType)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	err = types.SendEmail(
-		ctx,
-		string(template.Template),
-		translator,
-		notifyUser,
-		u.queries.GetSMTPConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesEmail,
-		u.metricFailedDeliveriesEmail,
-	).SendPasswordlessRegistrationLink(notifyUser, origin, code, e.ID, e.URLTemplate)
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.HumanPasswordlessInitCodeSent(ctx, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return domain.PasswordlessInitCodeLinkTemplate(origin+login.HandlerPrefix+login.EndpointPasswordlessRegistration, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.ID)
 }
 
 func (u *userNotifier) reducePasswordChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPasswordChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Yko2z8", "reduce.wrong.event.type %s", user.HumanPasswordChangedType)
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.queries.IsAlreadyHandled(ctx, event, nil, user.AggregateType, user.HumanPasswordChangeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Yko2z8", "reduce.wrong.event.type %s", user.HumanPasswordChangedType)
 	}
 
-	notificationPolicy, err := u.queries.NotificationPolicyByOrg(ctx, true, e.Aggregate().ResourceOwner, false)
-	if errors.IsNotFound(err) {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	if notificationPolicy.PasswordChange {
-		colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.queries.IsAlreadyHandled(ctx, event, nil, user.HumanPasswordChangeSentType)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		if alreadyHandled {
+			return nil
 		}
 
-		template, err := u.queries.MailTemplateByOrg(ctx, e.Aggregate().ResourceOwner, false)
-		if err != nil {
-			return nil, err
+		notificationPolicy, err := u.queries.NotificationPolicyByOrg(ctx, true, e.Aggregate().ResourceOwner, false)
+		if err != nil && !zerrors.IsNotFound(err) {
+			return err
 		}
 
-		notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-		if err != nil {
-			return nil, err
-		}
-		translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.PasswordChangeMessageType)
-		if err != nil {
-			return nil, err
+		if !notificationPolicy.PasswordChange {
+			return nil
 		}
 
-		ctx, origin, err := u.queries.Origin(ctx)
+		ctx, err = u.queries.Origin(ctx, e)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		err = types.SendEmail(
-			ctx,
-			string(template.Template),
-			translator,
-			notifyUser,
-			u.queries.GetSMTPConfig,
-			u.queries.GetFileSystemProvider,
-			u.queries.GetLogProvider,
-			colors,
-			u.assetsPrefix(ctx),
-			e,
-			u.metricSuccessfulDeliveriesEmail,
-			u.metricFailedDeliveriesEmail,
-		).SendPasswordChange(notifyUser, origin)
-		if err != nil {
-			return nil, err
-		}
-		err = u.commands.PasswordChangeSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return crdb.NewNoOpStatement(e), nil
+		origin := http_util.DomainContext(ctx).Origin()
+
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.PasswordChangeMessageType,
+			).
+				WithURLTemplate(console.LoginHintLink(origin, "{{.PreferredLoginName}}")).
+				WithUnverifiedChannel(),
+		)
+	}), nil
 }
 
 func (u *userNotifier) reducePhoneCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPhoneCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-He83g", "reduce.wrong.event.type %s", user.HumanPhoneCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-He83g", "reduce.wrong.event.type %s", user.HumanPhoneCodeAddedType)
 	}
 	if e.CodeReturned {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	ctx := HandlerContext(event.Aggregate())
-	alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
-		user.UserV1PhoneCodeAddedType, user.UserV1PhoneCodeSentType,
-		user.HumanPhoneCodeAddedType, user.HumanPhoneCodeSentType)
-	if err != nil {
-		return nil, err
-	}
-	if alreadyHandled {
-		return crdb.NewNoOpStatement(e), nil
-	}
-	code, err := crypto.DecryptString(e.Code, u.queries.UserDataCrypto)
-	if err != nil {
-		return nil, err
-	}
-	colors, err := u.queries.ActiveLabelPolicyByOrg(ctx, e.Aggregate().ResourceOwner, false)
-	if err != nil {
-		return nil, err
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	notifyUser, err := u.queries.GetNotifyUserByID(ctx, true, e.Aggregate().ID, false)
-	if err != nil {
-		return nil, err
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.UserV1PhoneCodeAddedType, user.UserV1PhoneCodeSentType,
+			user.HumanPhoneCodeAddedType, user.HumanPhoneCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				http_util.DomainContext(ctx).Origin(),
+				e.EventType,
+				domain.NotificationTypeSms,
+				domain.VerifyPhoneMessageType,
+			).
+				WithCode(e.Code, e.Expiry).
+				WithUnverifiedChannel().
+				WithArgs(&domain.NotificationArguments{
+					Domain: http_util.DomainContext(ctx).RequestedDomain(),
+				}),
+		)
+	}), nil
+}
+
+func (u *userNotifier) reduceInviteCodeAdded(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*user.HumanInviteCodeAddedEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Eeg3s", "reduce.wrong.event.type %s", user.HumanInviteCodeAddedType)
 	}
-	translator, err := u.queries.GetTranslatorWithOrgTexts(ctx, notifyUser.ResourceOwner, domain.VerifyPhoneMessageType)
-	if err != nil {
-		return nil, err
+	if e.CodeReturned {
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	ctx, origin, err := u.queries.Origin(ctx)
-	if err != nil {
-		return nil, err
+	return handler.NewStatement(event, func(ex handler.Executer, projectionName string) error {
+		ctx := HandlerContext(event.Aggregate())
+		alreadyHandled, err := u.checkIfCodeAlreadyHandledOrExpired(ctx, event, e.Expiry, nil,
+			user.HumanInviteCodeAddedType, user.HumanInviteCodeSentType)
+		if err != nil {
+			return err
+		}
+		if alreadyHandled {
+			return nil
+		}
+
+		ctx, err = u.queries.Origin(ctx, e)
+		if err != nil {
+			return err
+		}
+		origin := http_util.DomainContext(ctx).Origin()
+
+		applicationName := e.ApplicationName
+		if applicationName == "" {
+			applicationName = "ZITADEL"
+		}
+		return u.commands.RequestNotification(ctx,
+			e.Aggregate().ResourceOwner,
+			command.NewNotificationRequest(
+				e.Aggregate().ID,
+				e.Aggregate().ResourceOwner,
+				origin,
+				e.EventType,
+				domain.NotificationTypeEmail,
+				domain.InviteUserMessageType,
+			).
+				WithURLTemplate(u.inviteCodeTemplate(origin, e)).
+				WithCode(e.Code, e.Expiry).
+				WithUnverifiedChannel().
+				WithArgs(&domain.NotificationArguments{
+					AuthRequestID:   e.AuthRequestID,
+					ApplicationName: applicationName,
+				}),
+		)
+	}), nil
+}
+
+func (u *userNotifier) inviteCodeTemplate(origin string, e *user.HumanInviteCodeAddedEvent) string {
+	if e.URLTemplate != "" {
+		return e.URLTemplate
 	}
-	err = types.SendSMSTwilio(
-		ctx,
-		translator,
-		notifyUser,
-		u.queries.GetTwilioConfig,
-		u.queries.GetFileSystemProvider,
-		u.queries.GetLogProvider,
-		colors,
-		u.assetsPrefix(ctx),
-		e,
-		u.metricSuccessfulDeliveriesSMS,
-		u.metricFailedDeliveriesSMS,
-	).SendPhoneVerificationCode(notifyUser, origin, code, authz.GetInstance(ctx).RequestedDomain())
-	if err != nil {
-		return nil, err
-	}
-	err = u.commands.HumanPhoneVerificationCodeSent(ctx, e.Aggregate().ResourceOwner, e.Aggregate().ID)
-	if err != nil {
-		return nil, err
-	}
-	return crdb.NewNoOpStatement(e), nil
+	return login.InviteUserLinkTemplate(origin, e.Aggregate().ID, e.Aggregate().ResourceOwner, e.AuthRequestID)
 }
 
 func (u *userNotifier) checkIfCodeAlreadyHandledOrExpired(ctx context.Context, event eventstore.Event, expiry time.Duration, data map[string]interface{}, eventTypes ...eventstore.EventType) (bool, error) {
-	if event.CreationDate().Add(expiry).Before(time.Now().UTC()) {
+	if expiry > 0 && event.CreatedAt().Add(expiry).Before(time.Now().UTC()) {
 		return true, nil
 	}
-	return u.queries.IsAlreadyHandled(ctx, event, data, user.AggregateType, eventTypes...)
+	return u.queries.IsAlreadyHandled(ctx, event, data, eventTypes...)
 }

@@ -1,10 +1,5 @@
 package domain
 
-type User interface {
-	GetUsername() string
-	GetState() UserState
-}
-
 type UserState int32
 
 const (
@@ -19,15 +14,11 @@ const (
 	userStateCount
 )
 
-func (f UserState) Valid() bool {
-	return f >= 0 && f < userStateCount
-}
-
 func (s UserState) Exists() bool {
 	return s != UserStateUnspecified && s != UserStateDeleted
 }
 
-func (s UserState) NotDisabled() bool {
+func (s UserState) IsEnabled() bool {
 	return s == UserStateActive || s == UserStateInitial
 }
 
@@ -40,10 +31,6 @@ const (
 	userTypeCount
 )
 
-func (f UserType) Valid() bool {
-	return f >= 0 && f < userTypeCount
-}
-
 type UserAuthMethodType int32
 
 const (
@@ -55,12 +42,10 @@ const (
 	UserAuthMethodTypeIDP
 	UserAuthMethodTypeOTPSMS
 	UserAuthMethodTypeOTPEmail
+	UserAuthMethodTypeOTP // generic OTP when parsing AMR from OIDC
+	UserAuthMethodTypePrivateKey
 	userAuthMethodTypeCount
 )
-
-func (f UserAuthMethodType) Valid() bool {
-	return f >= 0 && f < userAuthMethodTypeCount
-}
 
 // HasMFA checks whether the user authenticated with multiple auth factors.
 // This can either be true if the list contains a [UserAuthMethodType] which by itself is MFA (e.g. [UserAuthMethodTypePasswordless])
@@ -76,7 +61,9 @@ func HasMFA(methods []UserAuthMethodType) bool {
 			UserAuthMethodTypeTOTP,
 			UserAuthMethodTypeOTPSMS,
 			UserAuthMethodTypeOTPEmail,
-			UserAuthMethodTypeIDP:
+			UserAuthMethodTypeIDP,
+			UserAuthMethodTypeOTP,
+			UserAuthMethodTypePrivateKey:
 			factors++
 		case UserAuthMethodTypeUnspecified,
 			userAuthMethodTypeCount:
@@ -84,6 +71,30 @@ func HasMFA(methods []UserAuthMethodType) bool {
 		}
 	}
 	return factors > 1
+}
+
+// Has2FA checks whether the auth factors provided are a second factor and will return true if at least one is.
+func Has2FA(methods []UserAuthMethodType) bool {
+	var factors int
+	for _, method := range methods {
+		switch method {
+		case
+			UserAuthMethodTypeU2F,
+			UserAuthMethodTypeTOTP,
+			UserAuthMethodTypeOTPSMS,
+			UserAuthMethodTypeOTPEmail,
+			UserAuthMethodTypeOTP:
+			factors++
+		case UserAuthMethodTypeUnspecified,
+			UserAuthMethodTypePassword,
+			UserAuthMethodTypePasswordless,
+			UserAuthMethodTypeIDP,
+			UserAuthMethodTypePrivateKey,
+			userAuthMethodTypeCount:
+			// ignore
+		}
+	}
+	return factors > 0
 }
 
 // RequiresMFA checks whether the user requires to authenticate with multiple auth factors based on the LoginPolicy and the authentication type.

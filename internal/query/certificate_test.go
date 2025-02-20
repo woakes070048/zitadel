@@ -9,8 +9,7 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -65,7 +64,7 @@ func Test_CertificatePrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -109,7 +108,7 @@ func Test_CertificatePrepares(t *testing.T) {
 							sequence:      20211109,
 							resourceOwner: "ro",
 							algorithm:     "",
-							use:           domain.KeyUsageSAMLMetadataSigning,
+							use:           crypto.KeyUsageSAMLMetadataSigning,
 						},
 						expiry:      testNow,
 						certificate: []byte("privateKey"),

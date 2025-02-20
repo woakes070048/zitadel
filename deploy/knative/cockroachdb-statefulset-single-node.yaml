@@ -57,18 +57,6 @@ spec:
   selector:
     app: cockroachdb
 ---
-apiVersion: policy/v1beta1
-kind: PodDisruptionBudget
-metadata:
-  name: cockroachdb-budget
-  labels:
-    app: cockroachdb
-spec:
-  selector:
-    matchLabels:
-      app: cockroachdb
-  maxUnavailable: 1
----
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -98,7 +86,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: cockroachdb
-        image: cockroachdb/cockroach:v22.2.2
+        image: cockroachdb/cockroach:latest
         imagePullPolicy: IfNotPresent
         # TODO: Change these to appropriate values for the hardware that you're running. You can see
         # the resources that can be allocated on each of your Kubernetes nodes by running:

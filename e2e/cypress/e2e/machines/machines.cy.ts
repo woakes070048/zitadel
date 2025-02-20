@@ -26,12 +26,12 @@ describe('machines', () => {
       });
 
       it('should add a machine', () => {
-        cy.get('[data-e2e="create-user-button"]').click();
+        cy.get('[data-e2e="create-user-button"]').should('be.visible').click();
         cy.url().should('contain', 'users/create-machine');
         //force needed due to the prefilled username prefix
-        cy.get('[formcontrolname="userName"]').type(machine.addName);
-        cy.get('[formcontrolname="name"]').type('e2emachinename');
-        cy.get('[formcontrolname="description"]').type('e2emachinedescription');
+        cy.get('[formcontrolname="userName"]').should('be.enabled').type(machine.addName);
+        cy.get('[formcontrolname="name"]').should('be.enabled').type('e2emachinename');
+        cy.get('[formcontrolname="description"]').should('be.enabled').type('e2emachinedescription');
         cy.get('[data-e2e="create-button"]').click();
         cy.shouldConfirmSuccess();
         let loginName = machine.addName;
@@ -56,9 +56,9 @@ describe('machines', () => {
         loginName = loginname(machine.removeName, Cypress.env('ORGANIZATION'));
       }
       it('should delete a machine', () => {
-        const rowSelector = `tr:contains(${machine.removeName})`;
-        cy.get(rowSelector).find('[data-e2e="enabled-delete-button"]').click({ force: true });
-        cy.get('[data-e2e="confirm-dialog-input"]').focus().type(loginName);
+        const rowSelector = `tr:contains('${machine.removeName}')`;
+        cy.get(rowSelector).should('be.visible').find('[data-e2e="enabled-delete-button"]').click({ force: true });
+        cy.get('[data-e2e="confirm-dialog-input"]').focus().should('be.enabled').type(loginName);
         cy.get('[data-e2e="confirm-dialog-button"]').click();
         cy.shouldConfirmSuccess();
         cy.shouldNotExist({

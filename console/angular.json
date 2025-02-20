@@ -23,13 +23,19 @@
             "polyfills": ["zone.js"],
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
-            "assets": ["src/favicon.ico", "src/assets", "src/manifest.webmanifest"],
+            "assets": [
+              "src/favicon.ico",
+              "src/assets",
+              "src/manifest.webmanifest",
+              { "glob": "**/*", "input": "../docs/static/img/tech", "output": "assets/docs/img/tech" }
+            ],
             "styles": ["src/styles.scss"],
             "scripts": ["./node_modules/tinycolor2/dist/tinycolor-min.js"],
             "stylePreprocessorOptions": {
               "includePaths": ["node_modules"]
             },
             "allowedCommonJsDependencies": [
+              "opentype.js",
               "fast-sha256",
               "buffer",
               "moment",
@@ -57,7 +63,7 @@
                 {
                   "type": "initial",
                   "maximumWarning": "8mb",
-                  "maximumError": "9mb"
+                  "maximumError": "10mb"
                 },
                 {
                   "type": "anyComponentStyle",
@@ -80,6 +86,7 @@
         },
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
+
           "configurations": {
             "production": {
               "browserTarget": "console:build:production"

@@ -8,17 +8,17 @@ import (
 	"regexp"
 	"testing"
 
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	userMetadataQuery = `SELECT projections.user_metadata4.creation_date,` +
-		` projections.user_metadata4.change_date,` +
-		` projections.user_metadata4.resource_owner,` +
-		` projections.user_metadata4.sequence,` +
-		` projections.user_metadata4.key,` +
-		` projections.user_metadata4.value` +
-		` FROM projections.user_metadata4` +
+	userMetadataQuery = `SELECT projections.user_metadata5.creation_date,` +
+		` projections.user_metadata5.change_date,` +
+		` projections.user_metadata5.resource_owner,` +
+		` projections.user_metadata5.sequence,` +
+		` projections.user_metadata5.key,` +
+		` projections.user_metadata5.value` +
+		` FROM projections.user_metadata5` +
 		` AS OF SYSTEM TIME '-1 ms'`
 	userMetadataCols = []string{
 		"creation_date",
@@ -28,17 +28,19 @@ var (
 		"key",
 		"value",
 	}
-	userMetadataListQuery = `SELECT projections.user_metadata4.creation_date,` +
-		` projections.user_metadata4.change_date,` +
-		` projections.user_metadata4.resource_owner,` +
-		` projections.user_metadata4.sequence,` +
-		` projections.user_metadata4.key,` +
-		` projections.user_metadata4.value,` +
+	userMetadataListQuery = `SELECT projections.user_metadata5.creation_date,` +
+		` projections.user_metadata5.change_date,` +
+		` projections.user_metadata5.user_id,` +
+		` projections.user_metadata5.resource_owner,` +
+		` projections.user_metadata5.sequence,` +
+		` projections.user_metadata5.key,` +
+		` projections.user_metadata5.value,` +
 		` COUNT(*) OVER ()` +
-		` FROM projections.user_metadata4`
+		` FROM projections.user_metadata5`
 	userMetadataListCols = []string{
 		"creation_date",
 		"change_date",
+		"user_id",
 		"resource_owner",
 		"sequence",
 		"key",
@@ -68,7 +70,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -129,7 +131,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -148,6 +150,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 						{
 							testNow,
 							testNow,
+							"1",
 							"resource_owner",
 							uint64(20211108),
 							"key",
@@ -164,6 +167,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 					{
 						CreationDate:  testNow,
 						ChangeDate:    testNow,
+						UserID:        "1",
 						ResourceOwner: "resource_owner",
 						Sequence:      20211108,
 						Key:           "key",
@@ -183,6 +187,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 						{
 							testNow,
 							testNow,
+							"1",
 							"resource_owner",
 							uint64(20211108),
 							"key",
@@ -191,6 +196,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 						{
 							testNow,
 							testNow,
+							"2",
 							"resource_owner",
 							uint64(20211108),
 							"key2",
@@ -207,6 +213,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 					{
 						CreationDate:  testNow,
 						ChangeDate:    testNow,
+						UserID:        "1",
 						ResourceOwner: "resource_owner",
 						Sequence:      20211108,
 						Key:           "key",
@@ -215,6 +222,7 @@ func Test_UserMetadataPrepares(t *testing.T) {
 					{
 						CreationDate:  testNow,
 						ChangeDate:    testNow,
+						UserID:        "2",
 						ResourceOwner: "resource_owner",
 						Sequence:      20211108,
 						Key:           "key2",

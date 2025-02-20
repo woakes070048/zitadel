@@ -9,17 +9,17 @@
   $warn: map-get($theme, warn);
   $background: map-get($theme, background);
   $accent: map-get($theme, accent);
-  $primary-color: mat.get-color-from-palette($primary, 500);
+  $primary-color: map-get($primary, 500);
 
-  $warn-color: mat.get-color-from-palette($warn, 500);
-  $accent-color: mat.get-color-from-palette($accent, 500);
+  $warn-color: map-get($warn, 500);
+  $accent-color: map-get($accent, 500);
   $foreground: map-get($theme, foreground);
   $is-dark-theme: map-get($theme, is-dark);
   $back: map-get($background, background);
 
   .filter-form {
     margin: 0 0.5rem;
-    color: mat.get-color-from-palette($foreground, text) !important;
+    color: map-get($foreground, text) !important;
   }
 
   .header-wrapper {
@@ -224,7 +224,8 @@
         flex: 1;
       }
 
-      .doc-link {
+      .doc-link,
+      .custom-link {
         margin-right: 1rem;
 
         @media only screen and (max-width: 800px) {
@@ -247,12 +248,16 @@
             display: none;
           }
 
-          @media only screen and (min-width: 600px) {
-            display: inline;
+          display: inline;
 
-            i {
-              margin-right: -0.5rem;
-              margin-left: 0.25rem;
+          i {
+            margin-right: -0.5rem;
+            margin-left: 0.25rem;
+          }
+
+          @media only screen and (max-width: 375px) {
+            .iam-label {
+              font-size: x-small;
             }
           }
         }

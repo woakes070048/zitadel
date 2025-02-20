@@ -83,6 +83,8 @@ import {
   AddProjectRoleResponse,
   AddSAMLAppRequest,
   AddSAMLAppResponse,
+  AddSAMLProviderRequest,
+  AddSAMLProviderResponse,
   AddSecondFactorToLoginPolicyRequest,
   AddSecondFactorToLoginPolicyResponse,
   AddUserGrantRequest,
@@ -131,6 +133,8 @@ import {
   GetCustomLoginTextsResponse,
   GetCustomPasswordChangeMessageTextRequest,
   GetCustomPasswordChangeMessageTextResponse,
+  GetCustomInviteUserMessageTextRequest,
+  GetCustomInviteUserMessageTextResponse,
   GetCustomPasswordlessRegistrationMessageTextRequest,
   GetCustomPasswordlessRegistrationMessageTextResponse,
   GetCustomPasswordResetMessageTextRequest,
@@ -153,6 +157,8 @@ import {
   GetDefaultLoginTextsResponse,
   GetDefaultPasswordChangeMessageTextRequest,
   GetDefaultPasswordChangeMessageTextResponse,
+  GetDefaultInviteUserMessageTextRequest,
+  GetDefaultInviteUserMessageTextResponse,
   GetDefaultPasswordComplexityPolicyRequest,
   GetDefaultPasswordComplexityPolicyResponse,
   GetDefaultPasswordlessRegistrationMessageTextRequest,
@@ -322,8 +328,12 @@ import {
   RemoveCustomLabelPolicyLogoDarkResponse,
   RemoveCustomLabelPolicyLogoRequest,
   RemoveCustomLabelPolicyLogoResponse,
+  RemoveHumanAuthFactorOTPEmailRequest,
+  RemoveHumanAuthFactorOTPEmailResponse,
   RemoveHumanAuthFactorOTPRequest,
   RemoveHumanAuthFactorOTPResponse,
+  RemoveHumanAuthFactorOTPSMSRequest,
+  RemoveHumanAuthFactorOTPSMSResponse,
   RemoveHumanAuthFactorU2FRequest,
   RemoveHumanAuthFactorU2FResponse,
   RemoveHumanLinkedIDPRequest,
@@ -347,6 +357,7 @@ import {
   RemoveOrgMetadataRequest,
   RemoveOrgMetadataResponse,
   RemoveOrgRequest,
+  RemoveOrgResponse,
   RemovePersonalAccessTokenRequest,
   RemovePersonalAccessTokenResponse,
   RemoveProjectGrantMemberRequest,
@@ -379,6 +390,8 @@ import {
   ResetCustomLoginTextsToDefaultResponse,
   ResetCustomPasswordChangeMessageTextToDefaultRequest,
   ResetCustomPasswordChangeMessageTextToDefaultResponse,
+  ResetCustomInviteUserMessageTextToDefaultRequest,
+  ResetCustomInviteUserMessageTextToDefaultResponse,
   ResetCustomPasswordlessRegistrationMessageTextToDefaultRequest,
   ResetCustomPasswordlessRegistrationMessageTextToDefaultResponse,
   ResetCustomPasswordResetMessageTextToDefaultRequest,
@@ -416,6 +429,8 @@ import {
   SetCustomLoginTextsResponse,
   SetCustomPasswordChangeMessageTextRequest,
   SetCustomPasswordChangeMessageTextResponse,
+  SetCustomInviteUserMessageTextRequest,
+  SetCustomInviteUserMessageTextResponse,
   SetCustomPasswordlessRegistrationMessageTextRequest,
   SetCustomPasswordlessRegistrationMessageTextResponse,
   SetCustomPasswordResetMessageTextRequest,
@@ -507,6 +522,8 @@ import {
   UpdateProjectRoleResponse,
   UpdateSAMLAppConfigRequest,
   UpdateSAMLAppConfigResponse,
+  UpdateSAMLProviderRequest,
+  UpdateSAMLProviderResponse,
   UpdateUserGrantRequest,
   UpdateUserGrantResponse,
   UpdateUserNameRequest,
@@ -542,11 +559,6 @@ export class ManagementService {
   public grantedProjectsCount: BehaviorSubject<number> = new BehaviorSubject(0);
 
   constructor(private readonly grpcService: GrpcService) {}
-
-  public getSupportedLanguages(): Promise<GetSupportedLanguagesResponse.AsObject> {
-    const req = new GetSupportedLanguagesRequest();
-    return this.grpcService.mgmt.getSupportedLanguages(req, null).then((resp) => resp.toObject());
-  }
 
   public getDefaultLoginTexts(req: GetDefaultLoginTextsRequest): Promise<GetDefaultLoginTextsResponse.AsObject> {
     return this.grpcService.mgmt.getDefaultLoginTexts(req, null).then((resp) => resp.toObject());
@@ -800,6 +812,32 @@ export class ManagementService {
     return this.grpcService.mgmt.resetCustomPasswordChangeMessageTextToDefault(req, null).then((resp) => resp.toObject());
   }
 
+  public getDefaultInviteUserMessageText(
+    req: GetDefaultInviteUserMessageTextRequest,
+  ): Promise<GetDefaultInviteUserMessageTextResponse.AsObject> {
+    return this.grpcService.mgmt.getDefaultInviteUserMessageText(req, null).then((resp) => resp.toObject());
+  }
+
+  public getCustomInviteUserMessageText(
+    req: GetCustomInviteUserMessageTextRequest,
+  ): Promise<GetCustomInviteUserMessageTextResponse.AsObject> {
+    return this.grpcService.mgmt.getCustomInviteUserMessageText(req, null).then((resp) => resp.toObject());
+  }
+
+  public setCustomInviteUserMessageText(
+    req: SetCustomInviteUserMessageTextRequest,
+  ): Promise<SetCustomInviteUserMessageTextResponse.AsObject> {
+    return this.grpcService.mgmt.setCustomInviteUserMessageCustomText(req, null).then((resp) => resp.toObject());
+  }
+
+  public resetCustomInviteUserMessageTextToDefault(
+    lang: string,
+  ): Promise<ResetCustomInviteUserMessageTextToDefaultResponse.AsObject> {
+    const req = new ResetCustomInviteUserMessageTextToDefaultRequest();
+    req.setLanguage(lang);
+    return this.grpcService.mgmt.resetCustomInviteUserMessageTextToDefault(req, null).then((resp) => resp.toObject());
+  }
+
   public updateUserName(userId: string, username: string): Promise<UpdateUserNameResponse.AsObject> {
     const req = new UpdateUserNameRequest();
     req.setUserId(userId);
@@ -1031,6 +1069,14 @@ export class ManagementService {
 
   public updateJWTProvider(req: UpdateJWTProviderRequest): Promise<UpdateJWTProviderResponse.AsObject> {
     return this.grpcService.mgmt.updateJWTProvider(req, null).then((resp) => resp.toObject());
+  }
+
+  public addSAMLProvider(req: AddSAMLProviderRequest): Promise<AddSAMLProviderResponse.AsObject> {
+    return this.grpcService.mgmt.addSAMLProvider(req, null).then((resp) => resp.toObject());
+  }
+
+  public updateSAMLProvider(req: UpdateSAMLProviderRequest): Promise<UpdateSAMLProviderResponse.AsObject> {
+    return this.grpcService.mgmt.updateSAMLProvider(req, null).then((resp) => resp.toObject());
   }
 
   public addGitHubEnterpriseServerProvider(
@@ -1576,9 +1622,13 @@ export class ManagementService {
     return this.grpcService.mgmt.getLockoutPolicy(req, null).then((resp) => resp.toObject());
   }
 
-  public addCustomLockoutPolicy(maxAttempts: number): Promise<AddCustomLockoutPolicyResponse.AsObject> {
+  public addCustomLockoutPolicy(
+    maxPasswordAttempts: number,
+    maxOTPAttempts: number,
+  ): Promise<AddCustomLockoutPolicyResponse.AsObject> {
     const req = new AddCustomLockoutPolicyRequest();
-    req.setMaxPasswordAttempts(maxAttempts);
+    req.setMaxPasswordAttempts(maxPasswordAttempts);
+    req.setMaxOtpAttempts(maxOTPAttempts);
 
     return this.grpcService.mgmt.addCustomLockoutPolicy(req, null).then((resp) => resp.toObject());
   }
@@ -1588,9 +1638,13 @@ export class ManagementService {
     return this.grpcService.mgmt.resetLockoutPolicyToDefault(req, null).then((resp) => resp.toObject());
   }
 
-  public updateCustomLockoutPolicy(maxAttempts: number): Promise<UpdateCustomLockoutPolicyResponse.AsObject> {
+  public updateCustomLockoutPolicy(
+    maxPasswordAttempts: number,
+    maxOTPAttempts: number,
+  ): Promise<UpdateCustomLockoutPolicyResponse.AsObject> {
     const req = new UpdateCustomLockoutPolicyRequest();
-    req.setMaxPasswordAttempts(maxAttempts);
+    req.setMaxPasswordAttempts(maxPasswordAttempts);
+    req.setMaxOtpAttempts(maxOTPAttempts);
 
     return this.grpcService.mgmt.updateCustomLockoutPolicy(req, null).then((resp) => resp.toObject());
   }
@@ -1730,7 +1784,7 @@ export class ManagementService {
     return this.grpcService.mgmt.removeUser(req, null).then((resp) => resp.toObject());
   }
 
-  public removeOrg(): Promise<RemoveUserResponse.AsObject> {
+  public removeOrg(): Promise<RemoveOrgResponse.AsObject> {
     const req = new RemoveOrgRequest();
     return this.grpcService.mgmt.removeOrg(req, null).then((resp) => resp.toObject());
   }
@@ -1803,6 +1857,18 @@ export class ManagementService {
     req.setUserId(userId);
     req.setTokenId(tokenId);
     return this.grpcService.mgmt.removeHumanAuthFactorU2F(req, null).then((resp) => resp.toObject());
+  }
+
+  public removeHumanAuthFactorOTPSMS(userId: string): Promise<RemoveHumanAuthFactorOTPSMSResponse.AsObject> {
+    const req = new RemoveHumanAuthFactorOTPSMSRequest();
+    req.setUserId(userId);
+    return this.grpcService.mgmt.removeHumanAuthFactorOTPSMS(req, null).then((resp) => resp.toObject());
+  }
+
+  public removeHumanAuthFactorOTPEmail(userId: string): Promise<RemoveHumanAuthFactorOTPEmailResponse.AsObject> {
+    const req = new RemoveHumanAuthFactorOTPEmailRequest();
+    req.setUserId(userId);
+    return this.grpcService.mgmt.removeHumanAuthFactorOTPEmail(req, null).then((resp) => resp.toObject());
   }
 
   public updateHumanProfile(

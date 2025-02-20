@@ -3,13 +3,17 @@ package ldap
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/url"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-ldap/ldap/v3"
+	"github.com/zitadel/logging"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/domain"
@@ -18,6 +22,7 @@ import (
 
 var ErrNoSingleUser = errors.New("user does not exist or too many entries returned")
 var ErrFailedLogin = errors.New("user failed to login")
+var ErrUnableToAppendRootCA = errors.New("unable to append rootCA")
 
 var _ idp.Session = (*Session)(nil)
 
@@ -29,8 +34,9 @@ type Session struct {
 	Entry    *ldap.Entry
 }
 
-func (s *Session) GetAuthURL() string {
-	return s.loginUrl
+// GetAuth implements the [idp.Session] interface.
+func (s *Session) GetAuth(ctx context.Context) (string, bool) {
+	return idp.Redirect(s.loginUrl)
 }
 
 func (s *Session) FetchUser(_ context.Context) (_ idp.User, err error) {
@@ -45,7 +51,9 @@ func (s *Session) FetchUser(_ context.Context) (_ idp.User, err error) {
 			s.Provider.userObjectClasses,
 			s.Provider.userFilters,
 			s.User,
-			s.Password, s.Provider.timeout)
+			s.Password,
+			s.Provider.timeout,
+			s.Provider.rootCA)
 		// If there were invalid credentials or multiple users with the credentials cancel process
 		if err != nil && (errors.Is(err, ErrFailedLogin) || errors.Is(err, ErrNoSingleUser)) {
 			return nil, err
@@ -90,8 +98,9 @@ func tryBind(
 	username string,
 	password string,
 	timeout time.Duration,
+	rootCA []byte,
 ) (*ldap.Entry, error) {
-	conn, err := getConnection(server, startTLS, timeout)
+	conn, err := getConnection(server, startTLS, timeout, rootCA)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +119,7 @@ func tryBind(
 		username,
 		password,
 		timeout,
+		rootCA,
 	)
 }
 
@@ -117,21 +127,37 @@ func getConnection(
 	server string,
 	startTLS bool,
 	timeout time.Duration,
+	rootCA []byte,
 ) (*ldap.Conn, error) {
 	if timeout == 0 {
 		timeout = ldap.DefaultTimeout
 	}
 
-	conn, err := ldap.DialURL(server, ldap.DialWithDialer(&net.Dialer{Timeout: timeout}))
-	if err != nil {
-		return nil, err
-	}
+	dialer := make([]ldap.DialOpt, 1, 2)
+	dialer[0] = ldap.DialWithDialer(&net.Dialer{Timeout: timeout})
 
 	u, err := url.Parse(server)
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme == "ldaps" && startTLS {
+
+	if u.Scheme == "ldaps" && len(rootCA) > 0 {
+		rootCAs := x509.NewCertPool()
+		if ok := rootCAs.AppendCertsFromPEM(rootCA); !ok {
+			return nil, ErrUnableToAppendRootCA
+		}
+
+		dialer = append(dialer, ldap.DialWithTLSConfig(&tls.Config{
+			RootCAs: rootCAs,
+		}))
+	}
+
+	conn, err := ldap.DialURL(server, dialer...)
+	if err != nil {
+		return nil, err
+	}
+
+	if u.Scheme == "ldap" && startTLS {
 		err = conn.StartTLS(&tls.Config{ServerName: u.Host})
 		if err != nil {
 			return nil, err
@@ -149,6 +175,7 @@ func trySearchAndUserBind(
 	username string,
 	password string,
 	timeout time.Duration,
+	rootCA []byte,
 ) (*ldap.Entry, error) {
 	searchQuery := queriesAndToSearchQuery(
 		objectClassesToSearchQuery(objectClasses),
@@ -171,12 +198,14 @@ func trySearchAndUserBind(
 		return nil, err
 	}
 	if len(sr.Entries) != 1 {
+		logging.WithFields("entries", len(sr.Entries)).Info("ldap: no single user found")
 		return nil, ErrNoSingleUser
 	}
 
 	user := sr.Entries[0]
 	// Bind as the user to verify their password
 	if err = conn.Bind(user.DN, password); err != nil {
+		logging.WithFields("userDN", user.DN).WithError(err).Info("ldap user bind failed")
 		return nil, ErrFailedLogin
 	}
 	return user, nil
@@ -258,12 +287,12 @@ func mapLDAPEntryToUser(
 	}
 
 	return NewUser(
-		user.GetAttributeValue(idAttribute),
-		user.GetAttributeValue(firstNameAttribute),
-		user.GetAttributeValue(lastNameAttribute),
-		user.GetAttributeValue(displayNameAttribute),
-		user.GetAttributeValue(nickNameAttribute),
-		user.GetAttributeValue(preferredUsernameAttribute),
+		getAttributeValue(user, idAttribute),
+		getAttributeValue(user, firstNameAttribute),
+		getAttributeValue(user, lastNameAttribute),
+		getAttributeValue(user, displayNameAttribute),
+		getAttributeValue(user, nickNameAttribute),
+		getAttributeValue(user, preferredUsernameAttribute),
 		domain.EmailAddress(user.GetAttributeValue(emailAttribute)),
 		emailVerified,
 		domain.PhoneNumber(user.GetAttributeValue(phoneAttribute)),
@@ -272,4 +301,16 @@ func mapLDAPEntryToUser(
 		user.GetAttributeValue(avatarURLAttribute),
 		user.GetAttributeValue(profileAttribute),
 	), nil
+}
+
+func getAttributeValue(user *ldap.Entry, attribute string) string {
+	// return an empty string if no attribute is needed
+	if attribute == "" {
+		return ""
+	}
+	value := user.GetAttributeValue(attribute)
+	if utf8.ValidString(value) {
+		return value
+	}
+	return base64.StdEncoding.EncodeToString(user.GetRawAttributeValue(attribute))
 }

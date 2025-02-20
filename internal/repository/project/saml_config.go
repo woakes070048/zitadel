@@ -2,11 +2,10 @@ package project
 
 import (
 	"context"
-	"encoding/json"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -18,31 +17,33 @@ const (
 type SAMLConfigAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	AppID       string `json:"appId"`
-	EntityID    string `json:"entityId"`
-	Metadata    []byte `json:"metadata,omitempty"`
-	MetadataURL string `json:"metadata_url,omitempty"`
+	AppID        string              `json:"appId"`
+	EntityID     string              `json:"entityId"`
+	Metadata     []byte              `json:"metadata,omitempty"`
+	MetadataURL  string              `json:"metadata_url,omitempty"`
+	LoginVersion domain.LoginVersion `json:"loginVersion,omitempty"`
+	LoginBaseURI string              `json:"loginBaseURI,omitempty"`
 }
 
-func (e *SAMLConfigAddedEvent) Data() interface{} {
+func (e *SAMLConfigAddedEvent) Payload() interface{} {
 	return e
 }
 
-func NewAddSAMLConfigEntityIDUniqueConstraint(entityID string) *eventstore.EventUniqueConstraint {
+func NewAddSAMLConfigEntityIDUniqueConstraint(entityID string) *eventstore.UniqueConstraint {
 	return eventstore.NewAddEventUniqueConstraint(
 		UniqueEntityIDType,
 		entityID,
 		"Errors.Project.App.SAMLEntityIDAlreadyExists")
 }
 
-func NewRemoveSAMLConfigEntityIDUniqueConstraint(entityID string) *eventstore.EventUniqueConstraint {
-	return eventstore.NewRemoveEventUniqueConstraint(
+func NewRemoveSAMLConfigEntityIDUniqueConstraint(entityID string) *eventstore.UniqueConstraint {
+	return eventstore.NewRemoveUniqueConstraint(
 		UniqueEntityIDType,
 		entityID)
 }
 
-func (e *SAMLConfigAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return []*eventstore.EventUniqueConstraint{NewAddSAMLConfigEntityIDUniqueConstraint(e.EntityID)}
+func (e *SAMLConfigAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return []*eventstore.UniqueConstraint{NewAddSAMLConfigEntityIDUniqueConstraint(e.EntityID)}
 }
 
 func NewSAMLConfigAddedEvent(
@@ -52,6 +53,8 @@ func NewSAMLConfigAddedEvent(
 	entityID string,
 	metadata []byte,
 	metadataURL string,
+	loginVersion domain.LoginVersion,
+	loginBaseURI string,
 ) *SAMLConfigAddedEvent {
 	return &SAMLConfigAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -59,21 +62,23 @@ func NewSAMLConfigAddedEvent(
 			aggregate,
 			SAMLConfigAddedType,
 		),
-		AppID:       appID,
-		EntityID:    entityID,
-		Metadata:    metadata,
-		MetadataURL: metadataURL,
+		AppID:        appID,
+		EntityID:     entityID,
+		Metadata:     metadata,
+		MetadataURL:  metadataURL,
+		LoginVersion: loginVersion,
+		LoginBaseURI: loginBaseURI,
 	}
 }
 
-func SAMLConfigAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func SAMLConfigAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &SAMLConfigAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "SAML-BDd15", "unable to unmarshal saml config")
+		return nil, zerrors.ThrowInternal(err, "SAML-BDd15", "unable to unmarshal saml config")
 	}
 
 	return e, nil
@@ -82,20 +87,22 @@ func SAMLConfigAddedEventMapper(event *repository.Event) (eventstore.Event, erro
 type SAMLConfigChangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	AppID       string  `json:"appId"`
-	EntityID    string  `json:"entityId"`
-	Metadata    []byte  `json:"metadata,omitempty"`
-	MetadataURL *string `json:"metadata_url,omitempty"`
-	oldEntityID string
+	AppID        string               `json:"appId"`
+	EntityID     string               `json:"entityId"`
+	Metadata     []byte               `json:"metadata,omitempty"`
+	MetadataURL  *string              `json:"metadata_url,omitempty"`
+	LoginVersion *domain.LoginVersion `json:"loginVersion,omitempty"`
+	LoginBaseURI *string              `json:"loginBaseURI,omitempty"`
+	oldEntityID  string
 }
 
-func (e *SAMLConfigChangedEvent) Data() interface{} {
+func (e *SAMLConfigChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *SAMLConfigChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *SAMLConfigChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	if e.EntityID != "" {
-		return []*eventstore.EventUniqueConstraint{
+		return []*eventstore.UniqueConstraint{
 			NewRemoveSAMLConfigEntityIDUniqueConstraint(e.oldEntityID),
 			NewAddSAMLConfigEntityIDUniqueConstraint(e.EntityID),
 		}
@@ -111,7 +118,7 @@ func NewSAMLConfigChangedEvent(
 	changes []SAMLConfigChanges,
 ) (*SAMLConfigChangedEvent, error) {
 	if len(changes) == 0 {
-		return nil, errors.ThrowPreconditionFailed(nil, "SAML-i8idç", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "SAML-i8idç", "Errors.NoChangesFound")
 	}
 
 	changeEvent := &SAMLConfigChangedEvent{
@@ -149,14 +156,25 @@ func ChangeEntityID(entityID string) func(event *SAMLConfigChangedEvent) {
 	}
 }
 
-func SAMLConfigChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func ChangeSAMLLoginVersion(loginVersion domain.LoginVersion) func(event *SAMLConfigChangedEvent) {
+	return func(e *SAMLConfigChangedEvent) {
+		e.LoginVersion = &loginVersion
+	}
+}
+func ChangeSAMLLoginBaseURI(loginBaseURI string) func(event *SAMLConfigChangedEvent) {
+	return func(e *SAMLConfigChangedEvent) {
+		e.LoginBaseURI = &loginBaseURI
+	}
+}
+
+func SAMLConfigChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &SAMLConfigChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "SAML-BFd15", "unable to unmarshal saml config")
+		return nil, zerrors.ThrowInternal(err, "SAML-BFd15", "unable to unmarshal saml config")
 	}
 
 	return e, nil

@@ -3,17 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type LockoutPolicy struct {
@@ -25,6 +27,7 @@ type LockoutPolicy struct {
 	State         domain.PolicyState
 
 	MaxPasswordAttempts uint64
+	MaxOTPAttempts      uint64
 	ShowFailures        bool
 
 	IsDefault bool
@@ -67,6 +70,10 @@ var (
 		name:  projection.LockoutPolicyMaxPasswordAttemptsCol,
 		table: lockoutTable,
 	}
+	LockoutColMaxOTPAttempts = Column{
+		name:  projection.LockoutPolicyMaxOTPAttemptsCol,
+		table: lockoutTable,
+	}
 	LockoutColIsDefault = Column{
 		name:  projection.LockoutPolicyIsDefaultCol,
 		table: lockoutTable,
@@ -75,24 +82,20 @@ var (
 		name:  projection.LockoutPolicyStateCol,
 		table: lockoutTable,
 	}
-	LockoutPolicyOwnerRemoved = Column{
-		name:  projection.LockoutPolicyOwnerRemovedCol,
-		table: lockoutTable,
-	}
 )
 
-func (q *Queries) LockoutPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string, withOwnerRemoved bool) (policy *LockoutPolicy, err error) {
+func (q *Queries) LockoutPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string) (policy *LockoutPolicy, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	if shouldTriggerBulk {
-		ctx = projection.LockoutPolicyProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerLockoutPolicyProjection")
+		ctx, err = projection.LockoutPolicyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 	eq := sq.Eq{
 		LockoutColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-	}
-	if !withOwnerRemoved {
-		eq[LockoutPolicyOwnerRemoved.identifier()] = false
 	}
 
 	stmt, scan := prepareLockoutPolicyQuery(ctx, q.client)
@@ -107,7 +110,7 @@ func (q *Queries) LockoutPolicyByOrg(ctx context.Context, shouldTriggerBulk bool
 		OrderBy(LockoutColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SKR6X", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-SKR6X", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -129,7 +132,7 @@ func (q *Queries) DefaultLockoutPolicy(ctx context.Context) (policy *LockoutPoli
 		OrderBy(LockoutColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-mN0Ci", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-mN0Ci", "Errors.Query.SQLStatement")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -148,6 +151,7 @@ func prepareLockoutPolicyQuery(ctx context.Context, db prepareDatabase) (sq.Sele
 			LockoutColResourceOwner.identifier(),
 			LockoutColShowFailures.identifier(),
 			LockoutColMaxPasswordAttempts.identifier(),
+			LockoutColMaxOTPAttempts.identifier(),
 			LockoutColIsDefault.identifier(),
 			LockoutColState.identifier(),
 		).
@@ -163,14 +167,15 @@ func prepareLockoutPolicyQuery(ctx context.Context, db prepareDatabase) (sq.Sele
 				&policy.ResourceOwner,
 				&policy.ShowFailures,
 				&policy.MaxPasswordAttempts,
+				&policy.MaxOTPAttempts,
 				&policy.IsDefault,
 				&policy.State,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-63mtI", "Errors.PasswordComplexityPolicy.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-38pZnUemLP", "Errors.IAM.PasswordLockoutPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-uulCZ", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-PJURxRUoYG", "Errors.Internal")
 			}
 			return policy, nil
 		}

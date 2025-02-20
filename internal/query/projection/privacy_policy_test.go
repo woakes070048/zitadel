@@ -4,12 +4,11 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestPrivacyPolicyProjection_reduces(t *testing.T) {
@@ -25,25 +24,28 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 		{
 			name: "org reduceAdded",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.PrivacyPolicyAddedEventType),
-					org.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						org.PrivacyPolicyAddedEventType,
+						org.AggregateType,
+						[]byte(`{
 						"tosLink": "http://tos.link",
 						"privacyLink": "http://privacy.link",
 						"helpLink": "http://help.link",
+						"docsLink": "http://docs.link",
+						"customLink": "http://custom.link",
+						"customLinkText": "Custom Link",
 						"supportEmail": "support@example.com"}`),
-				), org.PrivacyPolicyAddedEventMapper),
+					), org.PrivacyPolicyAddedEventMapper),
 			},
 			reduce: (&privacyPolicyProjection{}).reduceAdded,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.privacy_policies3 (creation_date, change_date, sequence, id, state, privacy_link, tos_link, help_link, support_email, is_default, resource_owner, instance_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+							expectedStmt: "INSERT INTO projections.privacy_policies4 (creation_date, change_date, sequence, id, state, privacy_link, tos_link, help_link, support_email, docs_link, custom_link, custom_link_text, is_default, resource_owner, instance_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								anyArg{},
@@ -54,6 +56,9 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 								"http://tos.link",
 								"http://help.link",
 								domain.EmailAddress("support@example.com"),
+								"http://docs.link",
+								"http://custom.link",
+								"Custom Link",
 								false,
 								"ro-id",
 								"instance-id",
@@ -67,24 +72,27 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 			name:   "org reduceChanged",
 			reduce: (&privacyPolicyProjection{}).reduceChanged,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.PrivacyPolicyChangedEventType),
-					org.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						org.PrivacyPolicyChangedEventType,
+						org.AggregateType,
+						[]byte(`{
 						"tosLink": "http://tos.link",
 						"privacyLink": "http://privacy.link",
 						"helpLink": "http://help.link",
+						"docsLink": "http://docs.link",
+						"customLink": "http://custom.link",
+						"customLinkText": "Custom Link",
 						"supportEmail": "support@example.com"}`),
-				), org.PrivacyPolicyChangedEventMapper),
+					), org.PrivacyPolicyChangedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.privacy_policies3 SET (change_date, sequence, privacy_link, tos_link, help_link, support_email) = ($1, $2, $3, $4, $5, $6) WHERE (id = $7) AND (instance_id = $8)",
+							expectedStmt: "UPDATE projections.privacy_policies4 SET (change_date, sequence, privacy_link, tos_link, help_link, support_email, docs_link, custom_link, custom_link_text) = ($1, $2, $3, $4, $5, $6, $7, $8, $9) WHERE (id = $10) AND (instance_id = $11)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -92,6 +100,9 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 								"http://tos.link",
 								"http://help.link",
 								domain.EmailAddress("support@example.com"),
+								"http://docs.link",
+								"http://custom.link",
+								"Custom Link",
 								"agg-id",
 								"instance-id",
 							},
@@ -104,20 +115,20 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 			name:   "org reduceRemoved",
 			reduce: (&privacyPolicyProjection{}).reduceRemoved,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.PrivacyPolicyRemovedEventType),
-					org.AggregateType,
-					nil,
-				), org.PrivacyPolicyRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						org.PrivacyPolicyRemovedEventType,
+						org.AggregateType,
+						nil,
+					), org.PrivacyPolicyRemovedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.privacy_policies3 WHERE (id = $1) AND (instance_id = $2)",
+							expectedStmt: "DELETE FROM projections.privacy_policies4 WHERE (id = $1) AND (instance_id = $2)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								"instance-id",
@@ -129,21 +140,21 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 		}, {
 			name: "instance reduceInstanceRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.InstanceRemovedEventType),
-					instance.AggregateType,
-					nil,
-				), instance.InstanceRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						instance.InstanceRemovedEventType,
+						instance.AggregateType,
+						nil,
+					), instance.InstanceRemovedEventMapper),
 			},
 			reduce: reduceInstanceRemovedHelper(PrivacyPolicyInstanceIDCol),
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.privacy_policies3 WHERE (instance_id = $1)",
+							expectedStmt: "DELETE FROM projections.privacy_policies4 WHERE (instance_id = $1)",
 							expectedArgs: []interface{}{
 								"agg-id",
 							},
@@ -156,24 +167,27 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 			name:   "instance reduceAdded",
 			reduce: (&privacyPolicyProjection{}).reduceAdded,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.PrivacyPolicyAddedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.PrivacyPolicyAddedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"tosLink": "http://tos.link",
 						"privacyLink": "http://privacy.link",
 						"helpLink": "http://help.link",
+						"docsLink": "http://docs.link",
+						"customLink": "http://custom.link",
+						"customLinkText": "Custom Link",
 						"supportEmail": "support@example.com"}`),
-				), instance.PrivacyPolicyAddedEventMapper),
+					), instance.PrivacyPolicyAddedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.privacy_policies3 (creation_date, change_date, sequence, id, state, privacy_link, tos_link, help_link, support_email, is_default, resource_owner, instance_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+							expectedStmt: "INSERT INTO projections.privacy_policies4 (creation_date, change_date, sequence, id, state, privacy_link, tos_link, help_link, support_email, docs_link, custom_link, custom_link_text, is_default, resource_owner, instance_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								anyArg{},
@@ -184,6 +198,9 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 								"http://tos.link",
 								"http://help.link",
 								domain.EmailAddress("support@example.com"),
+								"http://docs.link",
+								"http://custom.link",
+								"Custom Link",
 								true,
 								"ro-id",
 								"instance-id",
@@ -197,24 +214,27 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 			name:   "instance reduceChanged",
 			reduce: (&privacyPolicyProjection{}).reduceChanged,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.PrivacyPolicyChangedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.PrivacyPolicyChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"tosLink": "http://tos.link",
 						"privacyLink": "http://privacy.link",
 						"helpLink": "http://help.link",
+						"docsLink": "http://docs.link",
+						"customLink": "http://custom.link",
+						"customLinkText": "Custom Link",
 						"supportEmail": "support@example.com"}`),
-				), instance.PrivacyPolicyChangedEventMapper),
+					), instance.PrivacyPolicyChangedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.privacy_policies3 SET (change_date, sequence, privacy_link, tos_link, help_link, support_email) = ($1, $2, $3, $4, $5, $6) WHERE (id = $7) AND (instance_id = $8)",
+							expectedStmt: "UPDATE projections.privacy_policies4 SET (change_date, sequence, privacy_link, tos_link, help_link, support_email, docs_link, custom_link, custom_link_text) = ($1, $2, $3, $4, $5, $6, $7, $8, $9) WHERE (id = $10) AND (instance_id = $11)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -222,6 +242,9 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 								"http://tos.link",
 								"http://help.link",
 								domain.EmailAddress("support@example.com"),
+								"http://docs.link",
+								"http://custom.link",
+								"Custom Link",
 								"agg-id",
 								"instance-id",
 							},
@@ -234,20 +257,20 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 			name:   "org.reduceOwnerRemoved",
 			reduce: (&privacyPolicyProjection{}).reduceOwnerRemoved,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.OrgRemovedEventType),
-					org.AggregateType,
-					nil,
-				), org.OrgRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						org.OrgRemovedEventType,
+						org.AggregateType,
+						nil,
+					), org.OrgRemovedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.privacy_policies3 WHERE (instance_id = $1) AND (resource_owner = $2)",
+							expectedStmt: "DELETE FROM projections.privacy_policies4 WHERE (instance_id = $1) AND (resource_owner = $2)",
 							expectedArgs: []interface{}{
 								"instance-id",
 								"agg-id",
@@ -262,7 +285,7 @@ func TestPrivacyPolicyProjection_reduces(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			event := baseEvent(t)
 			got, err := tt.reduce(event)
-			if _, ok := err.(errors.InvalidArgument); !ok {
+			if ok := zerrors.IsErrorInvalidArgument(err); !ok {
 				t.Errorf("no wrong event mapping: %v, got: %v", err, got)
 			}
 

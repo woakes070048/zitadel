@@ -3,16 +3,18 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type UserMetadataList struct {
@@ -21,12 +23,13 @@ type UserMetadataList struct {
 }
 
 type UserMetadata struct {
-	CreationDate  time.Time
-	ChangeDate    time.Time
-	ResourceOwner string
-	Sequence      uint64
-	Key           string
-	Value         []byte
+	CreationDate  time.Time `json:"creation_date,omitempty"`
+	UserID        string    `json:"-"`
+	ChangeDate    time.Time `json:"change_date,omitempty"`
+	ResourceOwner string    `json:"resource_owner,omitempty"`
+	Sequence      uint64    `json:"sequence,omitempty"`
+	Key           string    `json:"key,omitempty"`
+	Value         []byte    `json:"value,omitempty"`
 }
 
 type UserMetadataSearchQueries struct {
@@ -71,10 +74,6 @@ var (
 		name:  projection.UserMetadataColumnValue,
 		table: userMetadataTable,
 	}
-	UserMetadataOwnerRemovedCol = Column{
-		name:  projection.UserMetadataColumnOwnerRemoved,
-		table: userMetadataTable,
-	}
 )
 
 func (q *Queries) GetUserMetadataByKey(ctx context.Context, shouldTriggerBulk bool, userID, key string, withOwnerRemoved bool, queries ...SearchQuery) (metadata *UserMetadata, err error) {
@@ -82,7 +81,10 @@ func (q *Queries) GetUserMetadataByKey(ctx context.Context, shouldTriggerBulk bo
 	defer func() { span.EndWithError(err) }()
 
 	if shouldTriggerBulk {
-		ctx = projection.UserMetadataProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerUserMetadataProjection")
+		ctx, err = projection.UserMetadataProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
 	query, scan := prepareUserMetadataQuery(ctx, q.client)
@@ -94,12 +96,9 @@ func (q *Queries) GetUserMetadataByKey(ctx context.Context, shouldTriggerBulk bo
 		UserMetadataKeyCol.identifier():        key,
 		UserMetadataInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}
-	if !withOwnerRemoved {
-		eq[UserMetadataOwnerRemovedCol.identifier()] = false
-	}
 	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-aDGG2", "Errors.Query.SQLStatment")
+		return nil, zerrors.ThrowInternal(err, "QUERY-aDGG2", "Errors.Query.SQLStatment")
 	}
 
 	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
@@ -109,25 +108,25 @@ func (q *Queries) GetUserMetadataByKey(ctx context.Context, shouldTriggerBulk bo
 	return metadata, err
 }
 
-func (q *Queries) SearchUserMetadata(ctx context.Context, shouldTriggerBulk bool, userID string, queries *UserMetadataSearchQueries, withOwnerRemoved bool) (metadata *UserMetadataList, err error) {
+func (q *Queries) SearchUserMetadataForUsers(ctx context.Context, shouldTriggerBulk bool, userIDs []string, queries *UserMetadataSearchQueries) (metadata *UserMetadataList, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	if shouldTriggerBulk {
-		ctx = projection.UserMetadataProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerUserMetadataProjection")
+		ctx, err = projection.UserMetadataProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
 	query, scan := prepareUserMetadataListQuery(ctx, q.client)
 	eq := sq.Eq{
-		UserMetadataUserIDCol.identifier():     userID,
+		UserMetadataUserIDCol.identifier():     userIDs,
 		UserMetadataInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
-	}
-	if !withOwnerRemoved {
-		eq[UserMetadataOwnerRemovedCol.identifier()] = false
 	}
 	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Egbgd", "Errors.Query.SQLStatment")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Egbgd", "Errors.Query.SQLStatment")
 	}
 
 	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
@@ -137,7 +136,39 @@ func (q *Queries) SearchUserMetadata(ctx context.Context, shouldTriggerBulk bool
 	if err != nil {
 		return nil, err
 	}
-	metadata.LatestSequence, err = q.latestSequence(ctx, userMetadataTable)
+	metadata.State, err = q.latestState(ctx, userMetadataTable)
+	return metadata, err
+}
+
+func (q *Queries) SearchUserMetadata(ctx context.Context, shouldTriggerBulk bool, userID string, queries *UserMetadataSearchQueries, withOwnerRemoved bool) (metadata *UserMetadataList, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggerBulk {
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerUserMetadataProjection")
+		ctx, err = projection.UserMetadataProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
+	}
+
+	query, scan := prepareUserMetadataListQuery(ctx, q.client)
+	eq := sq.Eq{
+		UserMetadataUserIDCol.identifier():     userID,
+		UserMetadataInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Egbgd", "Errors.Query.SQLStatment")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		metadata, err = scan(rows)
+		return err
+	}, stmt, args...)
+	if err != nil {
+		return nil, err
+	}
+	metadata.State, err = q.latestState(ctx, userMetadataTable)
 	return metadata, err
 }
 
@@ -166,6 +197,44 @@ func NewUserMetadataKeySearchQuery(value string, comparison TextComparison) (Sea
 	return NewTextQuery(UserMetadataKeyCol, value, comparison)
 }
 
+func NewUserMetadataExistsQuery(key string, value []byte, keyComparison TextComparison, valueComparison BytesComparison) (SearchQuery, error) {
+	// linking queries for the subselect
+	instanceQuery, err := NewColumnComparisonQuery(UserMetadataInstanceIDCol, UserInstanceIDCol, ColumnEquals)
+	if err != nil {
+		return nil, err
+	}
+
+	userIDQuery, err := NewColumnComparisonQuery(UserMetadataUserIDCol, UserIDCol, ColumnEquals)
+	if err != nil {
+		return nil, err
+	}
+
+	// text query to select data from the linked sub select
+	metadataKeyQuery, err := NewTextQuery(UserMetadataKeyCol, key, keyComparison)
+	if err != nil {
+		return nil, err
+	}
+
+	// text query to select data from the linked sub select
+	metadataValueQuery, err := NewBytesQuery(UserMetadataValueCol, value, valueComparison)
+	if err != nil {
+		return nil, err
+	}
+
+	// full definition of the sub select
+	subSelect, err := NewSubSelect(UserMetadataUserIDCol, []SearchQuery{instanceQuery, userIDQuery, metadataKeyQuery, metadataValueQuery})
+	if err != nil {
+		return nil, err
+	}
+
+	// "WHERE * IN (*)" query with subquery as list-data provider
+	return NewListQuery(
+		UserIDCol,
+		subSelect,
+		ListIn,
+	)
+}
+
 func prepareUserMetadataQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*UserMetadata, error)) {
 	return sq.Select(
 			UserMetadataCreationDateCol.identifier(),
@@ -189,10 +258,10 @@ func prepareUserMetadataQuery(ctx context.Context, db prepareDatabase) (sq.Selec
 			)
 
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-Rgh32", "Errors.User.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-Rgh32", "Errors.Metadata.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-Hhjt2", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Hhjt2", "Errors.Internal")
 			}
 			return m, nil
 		}
@@ -202,6 +271,7 @@ func prepareUserMetadataListQuery(ctx context.Context, db prepareDatabase) (sq.S
 	return sq.Select(
 			UserMetadataCreationDateCol.identifier(),
 			UserMetadataChangeDateCol.identifier(),
+			UserMetadataUserIDCol.identifier(),
 			UserMetadataResourceOwnerCol.identifier(),
 			UserMetadataSequenceCol.identifier(),
 			UserMetadataKeyCol.identifier(),
@@ -217,6 +287,7 @@ func prepareUserMetadataListQuery(ctx context.Context, db prepareDatabase) (sq.S
 				err := rows.Scan(
 					&m.CreationDate,
 					&m.ChangeDate,
+					&m.UserID,
 					&m.ResourceOwner,
 					&m.Sequence,
 					&m.Key,
@@ -231,7 +302,7 @@ func prepareUserMetadataListQuery(ctx context.Context, db prepareDatabase) (sq.S
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-sd3gh", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-sd3gh", "Errors.Query.CloseRows")
 			}
 
 			return &UserMetadataList{

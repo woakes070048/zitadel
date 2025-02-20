@@ -8,7 +8,7 @@ import { DomSanitizer } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterOutlet } from '@angular/router';
 import { LangChangeEvent, TranslateService } from '@ngx-translate/core';
 import { Observable, of, Subject } from 'rxjs';
-import { filter, map, takeUntil } from 'rxjs/operators';
+import { filter, map, startWith, takeUntil } from 'rxjs/operators';
 
 import { accountCard, adminLineAnimation, navAnimations, routeAnimations, toolbarAnimation } from './animations';
 import { Org } from './proto/generated/zitadel/org_pb';
@@ -20,6 +20,7 @@ import { ManagementService } from './services/mgmt.service';
 import { ThemeService } from './services/theme.service';
 import { UpdateService } from './services/update.service';
 import { fallbackLanguage, supportedLanguages, supportedLanguagesRegexp } from './utils/language';
+import { PosthogService } from './services/posthog.service';
 
 @Component({
   selector: 'cnsl-root',
@@ -68,6 +69,7 @@ export class AppComponent implements OnDestroy {
     keyboardShortcuts: KeyboardShortcutsService,
     private activatedRoute: ActivatedRoute,
     @Inject(DOCUMENT) private document: Document,
+    private posthog: PosthogService,
   ) {
     console.log(
       '%cWait!',
@@ -159,6 +161,8 @@ export class AppComponent implements OnDestroy {
 
     this.matIconRegistry.addSvgIcon('mdi_jwt', this.domSanitizer.bypassSecurityTrustResourceUrl('assets/mdi/jwt.svg'));
 
+    this.matIconRegistry.addSvgIcon('mdi_smtp', this.domSanitizer.bypassSecurityTrustResourceUrl('assets/mdi/mail.svg'));
+
     this.matIconRegistry.addSvgIcon('mdi_symbol', this.domSanitizer.bypassSecurityTrustResourceUrl('assets/mdi/symbol.svg'));
 
     this.matIconRegistry.addSvgIcon(
@@ -218,16 +222,19 @@ export class AppComponent implements OnDestroy {
           })
           .catch((error) => {
             console.error(error);
-            this.themeService.setDefaultColors();
             this.router.navigate(['/users/me']);
           });
       }
     });
 
     this.isDarkTheme = this.themeService.isDarkTheme;
-    this.isDarkTheme.subscribe((dark) => this.onSetTheme(dark ? 'dark-theme' : 'light-theme'));
+    this.isDarkTheme.pipe(takeUntil(this.destroy$)).subscribe((dark) => {
+      const theme = dark ? 'dark-theme' : 'light-theme';
+      this.onSetTheme(theme);
+      this.setFavicon(theme);
+    });
 
-    this.translate.onLangChange.subscribe((language: LangChangeEvent) => {
+    this.translate.onLangChange.pipe(takeUntil(this.destroy$)).subscribe((language: LangChangeEvent) => {
       this.document.documentElement.lang = language.lang;
       this.language = language.lang;
     });
@@ -264,25 +271,28 @@ export class AppComponent implements OnDestroy {
   }
 
   public changedOrg(org: Org.AsObject): void {
-    this.router.navigate(['/org']);
+    // Reference: https://stackoverflow.com/a/58114797
+    const currentUrl = this.router.url;
+    this.router.navigateByUrl('/', { skipLocationChange: true }).then(() => {
+      // We use navigateByUrl as our urls may have queryParams
+      this.router.navigateByUrl(currentUrl).then();
+    });
   }
 
   private setLanguage(): void {
     this.translate.addLangs(supportedLanguages);
     this.translate.setDefaultLang(fallbackLanguage);
 
-    this.authService.user.subscribe((userprofile) => {
-      if (userprofile) {
-        const cropped = navigator.language.split('-')[0] ?? fallbackLanguage;
-        const fallbackLang = cropped.match(supportedLanguagesRegexp) ? cropped : fallbackLanguage;
+    this.authService.user.pipe(filter(Boolean), takeUntil(this.destroy$)).subscribe((userprofile) => {
+      const cropped = navigator.language.split('-')[0] ?? fallbackLanguage;
+      const fallbackLang = cropped.match(supportedLanguagesRegexp) ? cropped : fallbackLanguage;
 
-        const lang = userprofile?.human?.profile?.preferredLanguage.match(supportedLanguagesRegexp)
-          ? userprofile.human.profile?.preferredLanguage
-          : fallbackLang;
-        this.translate.use(lang);
-        this.language = lang;
-        this.document.documentElement.lang = lang;
-      }
+      const lang = userprofile?.human?.profile?.preferredLanguage.match(supportedLanguagesRegexp)
+        ? userprofile.human.profile?.preferredLanguage
+        : fallbackLang;
+      this.translate.use(lang);
+      this.language = lang;
+      this.document.documentElement.lang = lang;
     });
   }
 
@@ -291,6 +301,29 @@ export class AppComponent implements OnDestroy {
       if (allowed) {
         this.mgmtService.listProjects(0, 0);
         this.mgmtService.listGrantedProjects(0, 0);
+      }
+    });
+  }
+
+  private setFavicon(theme: string): void {
+    this.authService.labelpolicy$.pipe(startWith(undefined), takeUntil(this.destroy$)).subscribe((lP) => {
+      if (theme === 'dark-theme' && lP?.iconUrlDark) {
+        // Check if asset url is stable, maybe it was deleted but still wasn't applied
+        fetch(lP.iconUrlDark).then((response) => {
+          if (response.ok) {
+            this.document.getElementById('appFavicon')?.setAttribute('href', lP.iconUrlDark);
+          }
+        });
+      } else if (theme === 'light-theme' && lP?.iconUrl) {
+        // Check if asset url is stable, maybe it was deleted but still wasn't applied
+        fetch(lP.iconUrl).then((response) => {
+          if (response.ok) {
+            this.document.getElementById('appFavicon')?.setAttribute('href', lP.iconUrl);
+          }
+        });
+      } else {
+        // Default Zitadel favicon
+        this.document.getElementById('appFavicon')?.setAttribute('href', 'favicon.ico');
       }
     });
   }

@@ -1,13 +1,11 @@
 package idp
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type LDAPIDPAddedEvent struct {
@@ -24,6 +22,7 @@ type LDAPIDPAddedEvent struct {
 	UserObjectClasses []string            `json:"userObjectClasses"`
 	UserFilters       []string            `json:"userFilters"`
 	Timeout           time.Duration       `json:"timeout"`
+	RootCA            []byte              `json:"rootCA"`
 
 	LDAPAttributes
 	Options
@@ -144,6 +143,7 @@ func NewLDAPIDPAddedEvent(
 	userObjectClasses []string,
 	userFilters []string,
 	timeout time.Duration,
+	rootCA []byte,
 	attributes LDAPAttributes,
 	options Options,
 ) *LDAPIDPAddedEvent {
@@ -160,27 +160,28 @@ func NewLDAPIDPAddedEvent(
 		UserObjectClasses: userObjectClasses,
 		UserFilters:       userFilters,
 		Timeout:           timeout,
+		RootCA:            rootCA,
 		LDAPAttributes:    attributes,
 		Options:           options,
 	}
 }
 
-func (e *LDAPIDPAddedEvent) Data() interface{} {
+func (e *LDAPIDPAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *LDAPIDPAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *LDAPIDPAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
-func LDAPIDPAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func LDAPIDPAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &LDAPIDPAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "IDP-Dgh42", "unable to unmarshal event")
+		return nil, zerrors.ThrowInternal(err, "IDP-Dgh42", "unable to unmarshal event")
 	}
 
 	return e, nil
@@ -200,6 +201,7 @@ type LDAPIDPChangedEvent struct {
 	UserObjectClasses []string            `json:"userObjectClasses,omitempty"`
 	UserFilters       []string            `json:"userFilters,omitempty"`
 	Timeout           *time.Duration      `json:"timeout,omitempty"`
+	RootCA            []byte              `json:"rootCA,omitempty"`
 
 	LDAPAttributeChanges
 	OptionChanges
@@ -243,7 +245,7 @@ func NewLDAPIDPChangedEvent(
 	changes []LDAPIDPChanges,
 ) (*LDAPIDPChangedEvent, error) {
 	if len(changes) == 0 {
-		return nil, errors.ThrowPreconditionFailed(nil, "IDP-SDf3f", "Errors.NoChangesFound")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "IDP-SDf3f", "Errors.NoChangesFound")
 	}
 	changedEvent := &LDAPIDPChangedEvent{
 		BaseEvent: *base,
@@ -317,6 +319,12 @@ func ChangeLDAPTimeout(timeout time.Duration) func(*LDAPIDPChangedEvent) {
 	}
 }
 
+func ChangeLDAPRootCA(rootCA []byte) func(*LDAPIDPChangedEvent) {
+	return func(e *LDAPIDPChangedEvent) {
+		e.RootCA = rootCA
+	}
+}
+
 func ChangeLDAPAttributes(attributes LDAPAttributeChanges) func(*LDAPIDPChangedEvent) {
 	return func(e *LDAPIDPChangedEvent) {
 		e.LDAPAttributeChanges = attributes
@@ -329,22 +337,22 @@ func ChangeLDAPOptions(options OptionChanges) func(*LDAPIDPChangedEvent) {
 	}
 }
 
-func (e *LDAPIDPChangedEvent) Data() interface{} {
+func (e *LDAPIDPChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *LDAPIDPChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *LDAPIDPChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
-func LDAPIDPChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func LDAPIDPChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &LDAPIDPChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "IDP-Sfth3", "unable to unmarshal event")
+		return nil, zerrors.ThrowInternal(err, "IDP-Sfth3", "unable to unmarshal event")
 	}
 
 	return e, nil

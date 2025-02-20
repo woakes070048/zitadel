@@ -3,7 +3,7 @@ package oidc
 import (
 	"time"
 
-	"github.com/zitadel/oidc/v2/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 
 	"github.com/zitadel/zitadel/internal/command"
 )
@@ -53,7 +53,7 @@ func (a *AuthRequestV2) GetResponseType() oidc.ResponseType {
 }
 
 func (a *AuthRequestV2) GetResponseMode() oidc.ResponseMode {
-	return ""
+	return ResponseModeToOIDC(a.ResponseMode)
 }
 
 func (a *AuthRequestV2) GetScopes() []string {

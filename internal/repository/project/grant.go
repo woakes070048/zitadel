@@ -2,13 +2,11 @@ package project
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
-
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -20,17 +18,24 @@ var (
 	GrantDeactivatedType    = grantEventTypePrefix + "deactivated"
 	GrantReactivatedType    = grantEventTypePrefix + "reactivated"
 	GrantRemovedType        = grantEventTypePrefix + "removed"
+
+	ProjectGrantSearchType              = "project_grant"
+	ProjectGrantGrantIDSearchField      = "grant_id"
+	ProjectGrantGrantedOrgIDSearchField = "granted_org_id"
+	ProjectGrantStateSearchField        = "state"
+	ProjectGrantRoleKeySearchField      = "role_key"
+	ProjectGrantObjectRevision          = uint8(1)
 )
 
-func NewAddProjectGrantUniqueConstraint(grantedOrgID, projectID string) *eventstore.EventUniqueConstraint {
+func NewAddProjectGrantUniqueConstraint(grantedOrgID, projectID string) *eventstore.UniqueConstraint {
 	return eventstore.NewAddEventUniqueConstraint(
 		UniqueGrantType,
 		fmt.Sprintf("%s:%s", grantedOrgID, projectID),
 		"Errors.Project.Grant.AlreadyExists")
 }
 
-func NewRemoveProjectGrantUniqueConstraint(grantedOrgID, projectID string) *eventstore.EventUniqueConstraint {
-	return eventstore.NewRemoveEventUniqueConstraint(
+func NewRemoveProjectGrantUniqueConstraint(grantedOrgID, projectID string) *eventstore.UniqueConstraint {
+	return eventstore.NewRemoveUniqueConstraint(
 		UniqueGrantType,
 		fmt.Sprintf("%s:%s", grantedOrgID, projectID))
 }
@@ -43,12 +48,82 @@ type GrantAddedEvent struct {
 	RoleKeys     []string `json:"roleKeys,omitempty"`
 }
 
-func (e *GrantAddedEvent) Data() interface{} {
+func (e *GrantAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return []*eventstore.EventUniqueConstraint{NewAddProjectGrantUniqueConstraint(e.GrantedOrgID, e.Aggregate().ID)}
+func (e *GrantAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return []*eventstore.UniqueConstraint{NewAddProjectGrantUniqueConstraint(e.GrantedOrgID, e.Aggregate().ID)}
+}
+
+func (e *GrantAddedEvent) Fields() []*eventstore.FieldOperation {
+	fields := make([]*eventstore.FieldOperation, 0, len(e.RoleKeys)+3)
+	fields = append(fields,
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+			ProjectGrantGrantIDSearchField,
+			&eventstore.Value{
+				Value:       e.GrantID,
+				ShouldIndex: true,
+			},
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+			ProjectGrantGrantedOrgIDSearchField,
+			&eventstore.Value{
+				Value:       e.GrantedOrgID,
+				ShouldIndex: true,
+			},
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+			ProjectGrantStateSearchField,
+			&eventstore.Value{
+				Value:       domain.ProjectGrantStateActive,
+				ShouldIndex: true,
+			},
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+	)
+
+	for _, roleKey := range e.RoleKeys {
+		fields = append(fields,
+			eventstore.SetField(
+				e.Aggregate(),
+				grantSearchObject(e.GrantID),
+				ProjectGrantRoleKeySearchField,
+				&eventstore.Value{
+					Value:       roleKey,
+					ShouldIndex: true,
+				},
+			),
+		)
+	}
+
+	return fields
 }
 
 func NewGrantAddedEvent(
@@ -70,14 +145,14 @@ func NewGrantAddedEvent(
 	}
 }
 
-func GrantAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-mL0vs", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-mL0vs", "unable to unmarshal project grant")
 	}
 
 	return e, nil
@@ -90,12 +165,43 @@ type GrantChangedEvent struct {
 	RoleKeys []string `json:"roleKeys,omitempty"`
 }
 
-func (e *GrantChangedEvent) Data() interface{} {
+func (e *GrantChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *GrantChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *GrantChangedEvent) Fields() []*eventstore.FieldOperation {
+	fields := make([]*eventstore.FieldOperation, 0, len(e.RoleKeys)+1)
+
+	fields = append(fields,
+		eventstore.RemoveSearchFieldsByAggregateAndObjectAndField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+
+			ProjectGrantRoleKeySearchField,
+		),
+	)
+
+	for _, roleKey := range e.RoleKeys {
+		fields = append(fields,
+			eventstore.SetField(
+				e.Aggregate(),
+				grantSearchObject(e.GrantID),
+
+				ProjectGrantRoleKeySearchField,
+
+				&eventstore.Value{
+					Value:       roleKey,
+					ShouldIndex: true,
+				},
+			),
+		)
+	}
+
+	return fields
 }
 
 func NewGrantChangedEvent(
@@ -115,14 +221,14 @@ func NewGrantChangedEvent(
 	}
 }
 
-func GrantChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-mL0vs", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-mL0vs", "unable to unmarshal project grant")
 	}
 
 	return e, nil
@@ -135,12 +241,49 @@ type GrantCascadeChangedEvent struct {
 	RoleKeys []string `json:"roleKeys,omitempty"`
 }
 
-func (e *GrantCascadeChangedEvent) Data() interface{} {
+func (e *GrantCascadeChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantCascadeChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *GrantCascadeChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *GrantCascadeChangedEvent) Fields() []*eventstore.FieldOperation {
+	fields := make([]*eventstore.FieldOperation, 0, len(e.RoleKeys)+1)
+
+	fields = append(fields,
+		eventstore.RemoveSearchFieldsByAggregateAndObjectAndField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+
+			ProjectGrantRoleKeySearchField,
+		),
+	)
+
+	for _, roleKey := range e.RoleKeys {
+		fields = append(fields,
+			eventstore.SetField(
+				e.Aggregate(),
+				grantSearchObject(e.GrantID),
+
+				ProjectGrantRoleKeySearchField,
+				&eventstore.Value{
+					Value:       roleKey,
+					ShouldIndex: true,
+				},
+				eventstore.FieldTypeInstanceID,
+				eventstore.FieldTypeResourceOwner,
+				eventstore.FieldTypeAggregateType,
+				eventstore.FieldTypeAggregateID,
+				eventstore.FieldTypeObjectType,
+				eventstore.FieldTypeObjectID,
+				eventstore.FieldTypeFieldName,
+			),
+		)
+	}
+
+	return fields
 }
 
 func NewGrantCascadeChangedEvent(
@@ -160,14 +303,14 @@ func NewGrantCascadeChangedEvent(
 	}
 }
 
-func GrantCascadeChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantCascadeChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantCascadeChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-9o0se", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-9o0se", "unable to unmarshal project grant")
 	}
 
 	return e, nil
@@ -179,12 +322,35 @@ type GrantDeactivateEvent struct {
 	GrantID string `json:"grantId,omitempty"`
 }
 
-func (e *GrantDeactivateEvent) Data() interface{} {
+func (e *GrantDeactivateEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantDeactivateEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *GrantDeactivateEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *GrantDeactivateEvent) Fields() []*eventstore.FieldOperation {
+	return []*eventstore.FieldOperation{
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+
+			ProjectGrantStateSearchField,
+			&eventstore.Value{
+				Value:       domain.ProjectGrantStateInactive,
+				ShouldIndex: true,
+			},
+
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+	}
 }
 
 func NewGrantDeactivateEvent(
@@ -202,14 +368,14 @@ func NewGrantDeactivateEvent(
 	}
 }
 
-func GrantDeactivateEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantDeactivateEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantDeactivateEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-9o0se", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-9o0se", "unable to unmarshal project grant")
 	}
 
 	return e, nil
@@ -221,12 +387,35 @@ type GrantReactivatedEvent struct {
 	GrantID string `json:"grantId,omitempty"`
 }
 
-func (e *GrantReactivatedEvent) Data() interface{} {
+func (e *GrantReactivatedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantReactivatedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *GrantReactivatedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *GrantReactivatedEvent) Fields() []*eventstore.FieldOperation {
+	return []*eventstore.FieldOperation{
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+
+			ProjectGrantStateSearchField,
+			&eventstore.Value{
+				Value:       domain.ProjectGrantStateActive,
+				ShouldIndex: true,
+			},
+
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+	}
 }
 
 func NewGrantReactivatedEvent(
@@ -244,14 +433,14 @@ func NewGrantReactivatedEvent(
 	}
 }
 
-func GrantReactivatedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantReactivatedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantReactivatedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-78f7D", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-78f7D", "unable to unmarshal project grant")
 	}
 
 	return e, nil
@@ -264,12 +453,35 @@ type GrantRemovedEvent struct {
 	grantedOrgID string
 }
 
-func (e *GrantRemovedEvent) Data() interface{} {
+func (e *GrantRemovedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *GrantRemovedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return []*eventstore.EventUniqueConstraint{NewRemoveProjectGrantUniqueConstraint(e.grantedOrgID, e.Aggregate().ID)}
+func (e *GrantRemovedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return []*eventstore.UniqueConstraint{NewRemoveProjectGrantUniqueConstraint(e.grantedOrgID, e.Aggregate().ID)}
+}
+
+func (e *GrantRemovedEvent) Fields() []*eventstore.FieldOperation {
+	return []*eventstore.FieldOperation{
+		eventstore.SetField(
+			e.Aggregate(),
+			grantSearchObject(e.GrantID),
+
+			ProjectGrantStateSearchField,
+			&eventstore.Value{
+				Value:       domain.ProjectGrantStateRemoved,
+				ShouldIndex: true,
+			},
+
+			eventstore.FieldTypeInstanceID,
+			eventstore.FieldTypeResourceOwner,
+			eventstore.FieldTypeAggregateType,
+			eventstore.FieldTypeAggregateID,
+			eventstore.FieldTypeObjectType,
+			eventstore.FieldTypeObjectID,
+			eventstore.FieldTypeFieldName,
+		),
+	}
 }
 
 func NewGrantRemovedEvent(
@@ -289,15 +501,23 @@ func NewGrantRemovedEvent(
 	}
 }
 
-func GrantRemovedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func GrantRemovedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e := &GrantRemovedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
 
-	err := json.Unmarshal(event.Data, e)
+	err := event.Unmarshal(e)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "PROJECT-28jM8", "unable to unmarshal project grant")
+		return nil, zerrors.ThrowInternal(err, "PROJECT-28jM8", "unable to unmarshal project grant")
 	}
 
 	return e, nil
+}
+
+func grantSearchObject(id string) eventstore.Object {
+	return eventstore.Object{
+		Type:     ProjectGrantSearchType,
+		Revision: 1,
+		ID:       id,
+	}
 }

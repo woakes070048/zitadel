@@ -2,46 +2,23 @@ package session
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"time"
 
+	"golang.org/x/text/language"
 	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/grpc/object/v2"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query"
-	session "github.com/zitadel/zitadel/pkg/grpc/session/v2beta"
+	"github.com/zitadel/zitadel/internal/zerrors"
+	"github.com/zitadel/zitadel/pkg/grpc/session/v2"
 )
 
-func (s *Server) GetSession(ctx context.Context, req *session.GetSessionRequest) (*session.GetSessionResponse, error) {
-	res, err := s.query.SessionByID(ctx, true, req.GetSessionId(), req.GetSessionToken())
-	if err != nil {
-		return nil, err
-	}
-	return &session.GetSessionResponse{
-		Session: sessionToPb(res),
-	}, nil
-}
-
-func (s *Server) ListSessions(ctx context.Context, req *session.ListSessionsRequest) (*session.ListSessionsResponse, error) {
-	queries, err := listSessionsRequestToQuery(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	sessions, err := s.query.SearchSessions(ctx, queries)
-	if err != nil {
-		return nil, err
-	}
-	return &session.ListSessionsResponse{
-		Details:  object.ToListDetails(sessions.SearchResponse),
-		Sessions: sessionsToPb(sessions.Sessions),
-	}, nil
-}
-
 func (s *Server) CreateSession(ctx context.Context, req *session.CreateSessionRequest) (*session.CreateSessionResponse, error) {
-	checks, metadata, err := s.createSessionRequestToCommand(ctx, req)
+	checks, metadata, userAgent, lifetime, err := s.createSessionRequestToCommand(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -50,10 +27,11 @@ func (s *Server) CreateSession(ctx context.Context, req *session.CreateSessionRe
 		return nil, err
 	}
 
-	set, err := s.command.CreateSession(ctx, cmds, metadata)
+	set, err := s.command.CreateSession(ctx, cmds, metadata, userAgent, lifetime)
 	if err != nil {
 		return nil, err
 	}
+
 	return &session.CreateSessionResponse{
 		Details:      object.DomainToDetailsPb(set.ObjectDetails),
 		SessionId:    set.ID,
@@ -72,13 +50,9 @@ func (s *Server) SetSession(ctx context.Context, req *session.SetSessionRequest)
 		return nil, err
 	}
 
-	set, err := s.command.UpdateSession(ctx, req.GetSessionId(), req.GetSessionToken(), cmds, req.GetMetadata())
+	set, err := s.command.UpdateSession(ctx, req.GetSessionId(), cmds, req.GetMetadata(), req.GetLifetime().AsDuration())
 	if err != nil {
 		return nil, err
-	}
-	// if there's no new token, just return the current
-	if set.NewToken == "" {
-		set.NewToken = req.GetSessionToken()
 	}
 	return &session.SetSessionResponse{
 		Details:      object.DomainToDetailsPb(set.ObjectDetails),
@@ -97,151 +71,30 @@ func (s *Server) DeleteSession(ctx context.Context, req *session.DeleteSessionRe
 	}, nil
 }
 
-func sessionsToPb(sessions []*query.Session) []*session.Session {
-	s := make([]*session.Session, len(sessions))
-	for i, session := range sessions {
-		s[i] = sessionToPb(session)
-	}
-	return s
-}
-
-func sessionToPb(s *query.Session) *session.Session {
-	return &session.Session{
-		Id:           s.ID,
-		CreationDate: timestamppb.New(s.CreationDate),
-		ChangeDate:   timestamppb.New(s.ChangeDate),
-		Sequence:     s.Sequence,
-		Factors:      factorsToPb(s),
-		Metadata:     s.Metadata,
-	}
-}
-
-func factorsToPb(s *query.Session) *session.Factors {
-	user := userFactorToPb(s.UserFactor)
-	if user == nil {
-		return nil
-	}
-	return &session.Factors{
-		User:     user,
-		Password: passwordFactorToPb(s.PasswordFactor),
-		WebAuthN: webAuthNFactorToPb(s.WebAuthNFactor),
-		Intent:   intentFactorToPb(s.IntentFactor),
-		Totp:     totpFactorToPb(s.TOTPFactor),
-		OtpSms:   otpFactorToPb(s.OTPSMSFactor),
-		OtpEmail: otpFactorToPb(s.OTPEmailFactor),
-	}
-}
-
-func passwordFactorToPb(factor query.SessionPasswordFactor) *session.PasswordFactor {
-	if factor.PasswordCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.PasswordFactor{
-		VerifiedAt: timestamppb.New(factor.PasswordCheckedAt),
-	}
-}
-
-func intentFactorToPb(factor query.SessionIntentFactor) *session.IntentFactor {
-	if factor.IntentCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.IntentFactor{
-		VerifiedAt: timestamppb.New(factor.IntentCheckedAt),
-	}
-}
-
-func webAuthNFactorToPb(factor query.SessionWebAuthNFactor) *session.WebAuthNFactor {
-	if factor.WebAuthNCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.WebAuthNFactor{
-		VerifiedAt:   timestamppb.New(factor.WebAuthNCheckedAt),
-		UserVerified: factor.UserVerified,
-	}
-}
-
-func totpFactorToPb(factor query.SessionTOTPFactor) *session.TOTPFactor {
-	if factor.TOTPCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.TOTPFactor{
-		VerifiedAt: timestamppb.New(factor.TOTPCheckedAt),
-	}
-}
-
-func otpFactorToPb(factor query.SessionOTPFactor) *session.OTPFactor {
-	if factor.OTPCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.OTPFactor{
-		VerifiedAt: timestamppb.New(factor.OTPCheckedAt),
-	}
-}
-
-func userFactorToPb(factor query.SessionUserFactor) *session.UserFactor {
-	if factor.UserID == "" || factor.UserCheckedAt.IsZero() {
-		return nil
-	}
-	return &session.UserFactor{
-		VerifiedAt:     timestamppb.New(factor.UserCheckedAt),
-		Id:             factor.UserID,
-		LoginName:      factor.LoginName,
-		DisplayName:    factor.DisplayName,
-		OrganisationId: factor.ResourceOwner,
-	}
-}
-
-func listSessionsRequestToQuery(ctx context.Context, req *session.ListSessionsRequest) (*query.SessionsSearchQueries, error) {
-	offset, limit, asc := object.ListQueryToQuery(req.Query)
-	queries, err := sessionQueriesToQuery(ctx, req.GetQueries())
-	if err != nil {
-		return nil, err
-	}
-	return &query.SessionsSearchQueries{
-		SearchRequest: query.SearchRequest{
-			Offset: offset,
-			Limit:  limit,
-			Asc:    asc,
-		},
-		Queries: queries,
-	}, nil
-}
-
-func sessionQueriesToQuery(ctx context.Context, queries []*session.SearchQuery) (_ []query.SearchQuery, err error) {
-	q := make([]query.SearchQuery, len(queries)+1)
-	for i, query := range queries {
-		q[i], err = sessionQueryToQuery(query)
-		if err != nil {
-			return nil, err
-		}
-	}
-	creatorQuery, err := query.NewSessionCreatorSearchQuery(authz.GetCtxData(ctx).UserID)
-	if err != nil {
-		return nil, err
-	}
-	q[len(queries)] = creatorQuery
-	return q, nil
-}
-
-func sessionQueryToQuery(query *session.SearchQuery) (query.SearchQuery, error) {
-	switch q := query.Query.(type) {
-	case *session.SearchQuery_IdsQuery:
-		return idsQueryToQuery(q.IdsQuery)
-	default:
-		return nil, caos_errs.ThrowInvalidArgument(nil, "GRPC-Sfefs", "List.Query.Invalid")
-	}
-}
-
-func idsQueryToQuery(q *session.IDsQuery) (query.SearchQuery, error) {
-	return query.NewSessionIDsSearchQuery(q.Ids)
-}
-
-func (s *Server) createSessionRequestToCommand(ctx context.Context, req *session.CreateSessionRequest) ([]command.SessionCommand, map[string][]byte, error) {
+func (s *Server) createSessionRequestToCommand(ctx context.Context, req *session.CreateSessionRequest) ([]command.SessionCommand, map[string][]byte, *domain.UserAgent, time.Duration, error) {
 	checks, err := s.checksToCommand(ctx, req.Checks)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, 0, err
 	}
-	return checks, req.GetMetadata(), nil
+	return checks, req.GetMetadata(), userAgentToCommand(req.GetUserAgent()), req.GetLifetime().AsDuration(), nil
+}
+
+func userAgentToCommand(userAgent *session.UserAgent) *domain.UserAgent {
+	if userAgent == nil {
+		return nil
+	}
+	out := &domain.UserAgent{
+		FingerprintID: userAgent.FingerprintId,
+		IP:            net.ParseIP(userAgent.GetIp()),
+		Description:   userAgent.Description,
+	}
+	if len(userAgent.Header) > 0 {
+		out.Header = make(http.Header, len(userAgent.Header))
+		for k, values := range userAgent.Header {
+			out.Header[k] = values.GetValues()
+		}
+	}
+	return out
 }
 
 func (s *Server) setSessionRequestToCommand(ctx context.Context, req *session.SetSessionRequest) ([]command.SessionCommand, error) {
@@ -263,7 +116,15 @@ func (s *Server) checksToCommand(ctx context.Context, checks *session.Checks) ([
 		if err != nil {
 			return nil, err
 		}
-		sessionChecks = append(sessionChecks, command.CheckUser(user.ID))
+		if !user.State.IsEnabled() {
+			return nil, zerrors.ThrowPreconditionFailed(nil, "SESSION-Gj4ko", "Errors.User.NotActive")
+		}
+
+		var preferredLanguage *language.Tag
+		if user.Human != nil && !user.Human.PreferredLanguage.IsRoot() {
+			preferredLanguage = &user.Human.PreferredLanguage
+		}
+		sessionChecks = append(sessionChecks, command.CheckUser(user.ID, user.ResourceOwner, preferredLanguage))
 	}
 	if password := checks.GetPassword(); password != nil {
 		sessionChecks = append(sessionChecks, command.CheckPassword(password.GetPassword()))
@@ -359,7 +220,7 @@ func (s *Server) createOTPEmailChallengeCommand(req *session.RequestChallenges_O
 	case nil:
 		return nil, s.command.CreateOTPEmailChallenge(), nil
 	default:
-		return nil, nil, caos_errs.ThrowUnimplementedf(nil, "SESSION-k3ng0", "delivery_type oneOf %T in OTPEmailChallenge not implemented", t)
+		return nil, nil, zerrors.ThrowUnimplementedf(nil, "SESSION-k3ng0", "delivery_type oneOf %T in OTPEmailChallenge not implemented", t)
 	}
 }
 
@@ -373,7 +234,7 @@ func userCheck(user *session.CheckUser) (userSearch, error) {
 	case *session.CheckUser_LoginName:
 		return userByLoginName(s.LoginName)
 	default:
-		return nil, caos_errs.ThrowUnimplementedf(nil, "SESSION-d3b4g0", "user search %T not implemented", s)
+		return nil, zerrors.ThrowUnimplementedf(nil, "SESSION-d3b4g0", "user search %T not implemented", s)
 	}
 }
 
@@ -386,11 +247,7 @@ func userByID(userID string) userSearch {
 }
 
 func userByLoginName(loginName string) (userSearch, error) {
-	loginNameQuery, err := query.NewUserLoginNamesSearchQuery(loginName)
-	if err != nil {
-		return nil, err
-	}
-	return userSearchByLoginName{loginNameQuery}, nil
+	return userSearchByLoginName{loginName}, nil
 }
 
 type userSearchByID struct {
@@ -398,13 +255,13 @@ type userSearchByID struct {
 }
 
 func (u userSearchByID) search(ctx context.Context, q *query.Queries) (*query.User, error) {
-	return q.GetUserByID(ctx, true, u.id, false)
+	return q.GetUserByID(ctx, true, u.id)
 }
 
 type userSearchByLoginName struct {
-	loginNameQuery query.SearchQuery
+	loginName string
 }
 
 func (u userSearchByLoginName) search(ctx context.Context, q *query.Queries) (*query.User, error) {
-	return q.GetUser(ctx, true, false, u.loginNameQuery)
+	return q.GetUserByLoginName(ctx, true, u.loginName)
 }

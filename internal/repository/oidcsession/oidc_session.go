@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"golang.org/x/text/language"
+
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
 )
@@ -21,20 +23,24 @@ const (
 type AddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	UserID      string                      `json:"userID"`
-	SessionID   string                      `json:"sessionID"`
-	ClientID    string                      `json:"clientID"`
-	Audience    []string                    `json:"audience"`
-	Scope       []string                    `json:"scope"`
-	AuthMethods []domain.UserAuthMethodType `json:"authMethods"`
-	AuthTime    time.Time                   `json:"authTime"`
+	UserID            string                      `json:"userID"`
+	UserResourceOwner string                      `json:"userResourceOwner"`
+	SessionID         string                      `json:"sessionID"`
+	ClientID          string                      `json:"clientID"`
+	Audience          []string                    `json:"audience"`
+	Scope             []string                    `json:"scope"`
+	AuthMethods       []domain.UserAuthMethodType `json:"authMethods"`
+	AuthTime          time.Time                   `json:"authTime"`
+	Nonce             string                      `json:"nonce,omitempty"`
+	PreferredLanguage *language.Tag               `json:"preferredLanguage,omitempty"`
+	UserAgent         *domain.UserAgent           `json:"userAgent,omitempty"`
 }
 
-func (e *AddedEvent) Data() interface{} {
+func (e *AddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *AddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *AddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -45,12 +51,16 @@ func (e *AddedEvent) SetBaseEvent(event *eventstore.BaseEvent) {
 func NewAddedEvent(ctx context.Context,
 	aggregate *eventstore.Aggregate,
 	userID,
+	userResourceOwner,
 	sessionID,
 	clientID string,
 	audience,
 	scope []string,
 	authMethods []domain.UserAuthMethodType,
 	authTime time.Time,
+	nonce string,
+	preferredLanguage *language.Tag,
+	userAgent *domain.UserAgent,
 ) *AddedEvent {
 	return &AddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -58,29 +68,35 @@ func NewAddedEvent(ctx context.Context,
 			aggregate,
 			AddedType,
 		),
-		UserID:      userID,
-		SessionID:   sessionID,
-		ClientID:    clientID,
-		Audience:    audience,
-		Scope:       scope,
-		AuthMethods: authMethods,
-		AuthTime:    authTime,
+		UserID:            userID,
+		UserResourceOwner: userResourceOwner,
+		SessionID:         sessionID,
+		ClientID:          clientID,
+		Audience:          audience,
+		Scope:             scope,
+		AuthMethods:       authMethods,
+		AuthTime:          authTime,
+		Nonce:             nonce,
+		PreferredLanguage: preferredLanguage,
+		UserAgent:         userAgent,
 	}
 }
 
 type AccessTokenAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	ID       string        `json:"id"`
-	Scope    []string      `json:"scope"`
-	Lifetime time.Duration `json:"lifetime"`
+	ID       string             `json:"id,omitempty"`
+	Scope    []string           `json:"scope,omitempty"`
+	Lifetime time.Duration      `json:"lifetime,omitempty"`
+	Reason   domain.TokenReason `json:"reason,omitempty"`
+	Actor    *domain.TokenActor `json:"actor,omitempty"`
 }
 
-func (e *AccessTokenAddedEvent) Data() interface{} {
+func (e *AccessTokenAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *AccessTokenAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *AccessTokenAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -94,6 +110,8 @@ func NewAccessTokenAddedEvent(
 	id string,
 	scope []string,
 	lifetime time.Duration,
+	reason domain.TokenReason,
+	actor *domain.TokenActor,
 ) *AccessTokenAddedEvent {
 	return &AccessTokenAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -104,6 +122,8 @@ func NewAccessTokenAddedEvent(
 		ID:       id,
 		Scope:    scope,
 		Lifetime: lifetime,
+		Reason:   reason,
+		Actor:    actor,
 	}
 }
 
@@ -111,11 +131,11 @@ type AccessTokenRevokedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *AccessTokenRevokedEvent) Data() interface{} {
+func (e *AccessTokenRevokedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *AccessTokenRevokedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *AccessTokenRevokedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -144,11 +164,11 @@ type RefreshTokenAddedEvent struct {
 	IdleLifetime time.Duration `json:"idleLifetime"`
 }
 
-func (e *RefreshTokenAddedEvent) Data() interface{} {
+func (e *RefreshTokenAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *RefreshTokenAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *RefreshTokenAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -182,11 +202,11 @@ type RefreshTokenRenewedEvent struct {
 	IdleLifetime time.Duration `json:"idleLifetime"`
 }
 
-func (e *RefreshTokenRenewedEvent) Data() interface{} {
+func (e *RefreshTokenRenewedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *RefreshTokenRenewedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *RefreshTokenRenewedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -215,11 +235,11 @@ type RefreshTokenRevokedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 }
 
-func (e *RefreshTokenRevokedEvent) Data() interface{} {
+func (e *RefreshTokenRevokedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *RefreshTokenRevokedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *RefreshTokenRevokedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 

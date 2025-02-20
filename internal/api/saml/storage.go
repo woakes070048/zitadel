@@ -3,6 +3,7 @@ package saml
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/dop251/goja"
@@ -15,22 +16,29 @@ import (
 
 	"github.com/zitadel/zitadel/internal/actions"
 	"github.com/zitadel/zitadel/internal/actions/object"
+	"github.com/zitadel/zitadel/internal/activity"
+	"github.com/zitadel/zitadel/internal/api/authz"
+	http_utils "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/api/http/middleware"
 	"github.com/zitadel/zitadel/internal/auth/repository"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var _ provider.EntityStorage = &Storage{}
 var _ provider.IdentityProviderStorage = &Storage{}
 var _ provider.AuthStorage = &Storage{}
 var _ provider.UserStorage = &Storage{}
+
+const (
+	LoginClientHeader = "x-zitadel-login-client"
+)
 
 type Storage struct {
 	certChan                   <-chan interface{}
@@ -50,33 +58,23 @@ type Storage struct {
 	command    *command.Commands
 	query      *query.Queries
 
-	defaultLoginURL string
+	defaultLoginURL   string
+	defaultLoginURLv2 string
 }
 
 func (p *Storage) GetEntityByID(ctx context.Context, entityID string) (*serviceprovider.ServiceProvider, error) {
-	app, err := p.query.AppBySAMLEntityID(ctx, entityID, false)
+	sp, err := p.query.ActiveSAMLServiceProviderByID(ctx, entityID)
 	if err != nil {
 		return nil, err
 	}
-	if app.State != domain.AppStateActive {
-		return nil, errors.ThrowPreconditionFailed(nil, "SAML-sdaGg", "app is not active")
-	}
-	return serviceprovider.NewServiceProvider(
-		app.ID,
-		&serviceprovider.Config{
-			Metadata: app.SAMLConfig.Metadata,
-		},
-		p.defaultLoginURL,
-	)
+
+	return ServiceProviderFromBusiness(sp, p.defaultLoginURL, p.defaultLoginURLv2)
 }
 
 func (p *Storage) GetEntityIDByAppID(ctx context.Context, appID string) (string, error) {
-	app, err := p.query.AppByID(ctx, appID, false)
+	app, err := p.query.AppByID(ctx, appID, true)
 	if err != nil {
 		return "", err
-	}
-	if app.State != domain.AppStateActive {
-		return "", errors.ThrowPreconditionFailed(nil, "SAML-sdaGg", "app is not active")
 	}
 	return app.SAMLConfig.EntityID, nil
 }
@@ -86,23 +84,78 @@ func (p *Storage) Health(context.Context) error {
 }
 
 func (p *Storage) GetCA(ctx context.Context) (*key.CertificateAndKey, error) {
-	return p.GetCertificateAndKey(ctx, domain.KeyUsageSAMLCA)
+	return p.GetCertificateAndKey(ctx, crypto.KeyUsageSAMLCA)
 }
 
 func (p *Storage) GetMetadataSigningKey(ctx context.Context) (*key.CertificateAndKey, error) {
-	return p.GetCertificateAndKey(ctx, domain.KeyUsageSAMLMetadataSigning)
+	return p.GetCertificateAndKey(ctx, crypto.KeyUsageSAMLMetadataSigning)
 }
 
 func (p *Storage) GetResponseSigningKey(ctx context.Context) (*key.CertificateAndKey, error) {
-	return p.GetCertificateAndKey(ctx, domain.KeyUsageSAMLResponseSinging)
+	return p.GetCertificateAndKey(ctx, crypto.KeyUsageSAMLResponseSinging)
 }
 
 func (p *Storage) CreateAuthRequest(ctx context.Context, req *samlp.AuthnRequestType, acsUrl, protocolBinding, relayState, applicationID string) (_ models.AuthRequestInt, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
+
+	// for backwards compatibility we pass the login client if set
+	headers, _ := http_utils.HeadersFromCtx(ctx)
+	loginClient := headers.Get(LoginClientHeader)
+
+	// for backwards compatibility we'll use the new login if the header is set (no matter the other configs)
+	if loginClient != "" {
+		return p.createAuthRequestLoginClient(ctx, req, acsUrl, protocolBinding, relayState, applicationID, loginClient)
+	}
+
+	// if the instance requires the v2 login, use it no matter what the application configured
+	if authz.GetFeatures(ctx).LoginV2.Required {
+		return p.createAuthRequestLoginClient(ctx, req, acsUrl, protocolBinding, relayState, applicationID, loginClient)
+	}
+	version, err := p.query.SAMLAppLoginVersion(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	switch version {
+	case domain.LoginVersion1:
+		return p.createAuthRequest(ctx, req, acsUrl, protocolBinding, relayState, applicationID)
+	case domain.LoginVersion2:
+		return p.createAuthRequestLoginClient(ctx, req, acsUrl, protocolBinding, relayState, applicationID, loginClient)
+	case domain.LoginVersionUnspecified:
+		fallthrough
+	default:
+		// since we already checked for a login header, we can fall back to the v1 login
+		return p.createAuthRequest(ctx, req, acsUrl, protocolBinding, relayState, applicationID)
+	}
+}
+
+func (p *Storage) createAuthRequestLoginClient(ctx context.Context, req *samlp.AuthnRequestType, acsUrl, protocolBinding, relayState, applicationID, loginClient string) (_ models.AuthRequestInt, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+	samlRequest := &command.SAMLRequest{
+		ApplicationID: applicationID,
+		ACSURL:        acsUrl,
+		RelayState:    relayState,
+		RequestID:     req.Id,
+		Binding:       protocolBinding,
+		Issuer:        req.Issuer.Text,
+		Destination:   req.Destination,
+		LoginClient:   loginClient,
+	}
+
+	aar, err := p.command.AddSAMLRequest(ctx, samlRequest)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthRequestV2{aar}, nil
+}
+
+func (p *Storage) createAuthRequest(ctx context.Context, req *samlp.AuthnRequestType, acsUrl, protocolBinding, relayState, applicationID string) (_ models.AuthRequestInt, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 	userAgentID, ok := middleware.UserAgentIDFromCtx(ctx)
 	if !ok {
-		return nil, errors.ThrowPreconditionFailed(nil, "SAML-sd436", "no user agent id")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "SAML-sd436", "no user agent id")
 	}
 
 	authRequest := CreateAuthRequestToBusiness(ctx, req, acsUrl, protocolBinding, applicationID, relayState, userAgentID)
@@ -118,9 +171,18 @@ func (p *Storage) CreateAuthRequest(ctx context.Context, req *samlp.AuthnRequest
 func (p *Storage) AuthRequestByID(ctx context.Context, id string) (_ models.AuthRequestInt, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
+
+	if strings.HasPrefix(id, command.IDPrefixV2) {
+		req, err := p.command.GetCurrentSAMLRequest(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return &AuthRequestV2{req}, nil
+	}
+
 	userAgentID, ok := middleware.UserAgentIDFromCtx(ctx)
 	if !ok {
-		return nil, errors.ThrowPreconditionFailed(nil, "SAML-D3g21", "no user agent id")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "SAML-D3g21", "no user agent id")
 	}
 	resp, err := p.repo.AuthRequestByIDCheckLoggedIn(ctx, id, userAgentID)
 	if err != nil {
@@ -132,9 +194,12 @@ func (p *Storage) AuthRequestByID(ctx context.Context, id string) (_ models.Auth
 func (p *Storage) SetUserinfoWithUserID(ctx context.Context, applicationID string, userinfo models.AttributeSetter, userID string, attributes []int) (err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
-	user, err := p.query.GetUserByID(ctx, true, userID, false)
+	user, err := p.query.GetUserByID(ctx, true, userID)
 	if err != nil {
 		return err
+	}
+	if user.State != domain.UserStateActive {
+		return zerrors.ThrowPreconditionFailed(nil, "SAML-S3gFd", "Errors.User.NotActive")
 	}
 
 	userGrants, err := p.getGrants(ctx, userID, applicationID)
@@ -148,6 +213,9 @@ func (p *Storage) SetUserinfoWithUserID(ctx context.Context, applicationID strin
 	}
 
 	setUserinfo(user, userinfo, attributes, customAttributes)
+
+	// trigger activity log for authentication for user
+	activity.Trigger(ctx, user.ResourceOwner, user.ID, activity.SAMLResponse, p.eventstore.FilterToQueryReducer)
 	return nil
 }
 
@@ -155,13 +223,12 @@ func (p *Storage) SetUserinfoWithLoginName(ctx context.Context, userinfo models.
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
-	loginNameSQ, err := query.NewUserLoginNamesSearchQuery(loginName)
+	user, err := p.query.GetUserByLoginName(ctx, true, loginName)
 	if err != nil {
 		return err
 	}
-	user, err := p.query.GetUser(ctx, true, false, loginNameSQ)
-	if err != nil {
-		return err
+	if user.State != domain.UserStateActive {
+		return zerrors.ThrowPreconditionFailed(nil, "SAML-FJ262", "Errors.User.NotActive")
 	}
 
 	setUserinfo(user, userinfo, attributes, map[string]*customAttribute{})
@@ -212,7 +279,7 @@ func setUserinfo(user *query.User, userinfo models.AttributeSetter, attributes [
 
 func (p *Storage) getCustomAttributes(ctx context.Context, user *query.User, userGrants *query.UserGrants) (map[string]*customAttribute, error) {
 	customAttributes := make(map[string]*customAttribute, 0)
-	queriedActions, err := p.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeCustomizeSAMLResponse, domain.TriggerTypePreSAMLResponseCreation, user.ResourceOwner, false)
+	queriedActions, err := p.query.GetActiveActionsByFlowAndTriggerType(ctx, domain.FlowTypeCustomizeSAMLResponse, domain.TriggerTypePreSAMLResponseCreation, user.ResourceOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +313,14 @@ func (p *Storage) getCustomAttributes(ctx context.Context, user *query.User, use
 					}
 				}),
 				actions.SetFields("grants", func(c *actions.FieldConfig) interface{} {
-					return object.UserGrantsFromQuery(c, userGrants)
+					return object.UserGrantsFromQuery(ctx, p.query, c, userGrants)
+				}),
+			),
+			actions.SetFields("org",
+				actions.SetFields("getMetadata", func(c *actions.FieldConfig) interface{} {
+					return func(goja.FunctionCall) goja.Value {
+						return object.GetOrganizationMetadata(ctx, p.query, c, user.ResourceOwner)
+					}
 				}),
 			),
 		),
@@ -310,7 +384,7 @@ func (p *Storage) getCustomAttributes(ctx context.Context, user *query.User, use
 }
 
 func (p *Storage) getGrants(ctx context.Context, userID, applicationID string) (*query.UserGrants, error) {
-	projectID, err := p.query.ProjectIDFromClientID(ctx, applicationID, false)
+	projectID, err := p.query.ProjectIDFromClientID(ctx, applicationID)
 	if err != nil {
 		return nil, err
 	}
@@ -323,12 +397,17 @@ func (p *Storage) getGrants(ctx context.Context, userID, applicationID string) (
 	if err != nil {
 		return nil, err
 	}
+	activeQuery, err := query.NewUserGrantStateQuery(domain.UserGrantStateActive)
+	if err != nil {
+		return nil, err
+	}
 	return p.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{
 			projectQuery,
 			userIDQuery,
+			activeQuery,
 		},
-	}, true, false)
+	}, true)
 }
 
 type customAttribute struct {

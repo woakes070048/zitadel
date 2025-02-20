@@ -6,8 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"unicode/utf8"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var _ EncryptionAlgorithm = (*AESCrypto)(nil)
@@ -46,15 +47,17 @@ func (a *AESCrypto) Decrypt(value []byte, keyID string) ([]byte, error) {
 	return DecryptAES(value, key)
 }
 
+// DecryptString decrypts the value using the key identified by keyID.
+// When the decrypted value contains non-UTF8 characters an error is returned.
 func (a *AESCrypto) DecryptString(value []byte, keyID string) (string, error) {
-	key, err := a.decryptionKey(keyID)
+	b, err := a.Decrypt(value, keyID)
 	if err != nil {
 		return "", err
 	}
-	b, err := DecryptAES(value, key)
-	if err != nil {
-		return "", err
+	if !utf8.Valid(b) {
+		return "", zerrors.ThrowPreconditionFailed(err, "CRYPT-hiCh0", "non-UTF-8 in decrypted string")
 	}
+
 	return string(b), nil
 }
 
@@ -73,7 +76,7 @@ func (a *AESCrypto) encryptionKey() string {
 func (a *AESCrypto) decryptionKey(keyID string) (string, error) {
 	key, ok := a.keys[keyID]
 	if !ok {
-		return "", errors.ThrowNotFound(nil, "CRYPT-nkj1s", "unknown key id")
+		return "", zerrors.ThrowNotFound(nil, "CRYPT-nkj1s", "unknown key id")
 	}
 	return key, nil
 }
@@ -94,7 +97,7 @@ func EncryptAES(plainText []byte, key string) ([]byte, error) {
 
 	maxSize := 64 * 1024 * 1024
 	if len(plainText) > maxSize {
-		return nil, errors.ThrowPreconditionFailedf(nil, "CRYPT-AGg4t3", "data too large, max bytes: %v", maxSize)
+		return nil, zerrors.ThrowPreconditionFailedf(nil, "CRYPT-AGg4t3", "data too large, max bytes: %v", maxSize)
 	}
 	cipherText := make([]byte, aes.BlockSize+len(plainText))
 	iv := cipherText[:aes.BlockSize]
@@ -130,7 +133,7 @@ func DecryptAES(text []byte, key string) ([]byte, error) {
 	}
 
 	if len(cipherText) < aes.BlockSize {
-		err = errors.ThrowPreconditionFailed(nil, "CRYPT-23kH1", "cipher text block too short")
+		err = zerrors.ThrowPreconditionFailed(nil, "CRYPT-23kH1", "cipher text block too short")
 		return nil, err
 	}
 	iv := cipherText[:aes.BlockSize]

@@ -1,10 +1,10 @@
 import { CommonModule } from '@angular/common';
 import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatLegacyButtonModule as MatButtonModule } from '@angular/material/legacy-button';
-import { MatLegacySelectModule as MatSelectModule } from '@angular/material/legacy-select';
-import { MatLegacyTooltipModule as MatTooltipModule } from '@angular/material/legacy-tooltip';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { TranslateModule } from '@ngx-translate/core';
 import { DropzoneModule } from 'src/app/directives/dropzone/dropzone.module';
 import { AvatarModule } from 'src/app/modules/avatar/avatar.module';
@@ -12,6 +12,7 @@ import { InputModule } from 'src/app/modules/input/input.module';
 
 import { DetailFormComponent } from './detail-form.component';
 import { ProfilePictureComponent } from './profile-picture/profile-picture.component';
+import { MatDialogModule } from '@angular/material/dialog';
 
 @NgModule({
   declarations: [DetailFormComponent, ProfilePictureComponent],
@@ -26,6 +27,7 @@ import { ProfilePictureComponent } from './profile-picture/profile-picture.compo
     MatButtonModule,
     MatTooltipModule,
     MatIconModule,
+    MatDialogModule,
     TranslateModule,
     InputModule,
   ],

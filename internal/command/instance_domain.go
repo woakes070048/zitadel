@@ -7,12 +7,13 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/http"
+	"github.com/zitadel/zitadel/internal/api/ui/console/path"
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/project"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -32,7 +33,7 @@ func (c *Commands) AddInstanceDomain(ctx context.Context, instanceDomain string)
 	}
 	return &domain.ObjectDetails{
 		Sequence:      events[len(events)-1].Sequence(),
-		EventDate:     events[len(events)-1].CreationDate(),
+		EventDate:     events[len(events)-1].CreatedAt(),
 		ResourceOwner: events[len(events)-1].Aggregate().InstanceID,
 	}, nil
 }
@@ -50,7 +51,7 @@ func (c *Commands) SetPrimaryInstanceDomain(ctx context.Context, instanceDomain 
 	}
 	return &domain.ObjectDetails{
 		Sequence:      events[len(events)-1].Sequence(),
-		EventDate:     events[len(events)-1].CreationDate(),
+		EventDate:     events[len(events)-1].CreatedAt(),
 		ResourceOwner: events[len(events)-1].Aggregate().InstanceID,
 	}, nil
 }
@@ -68,13 +69,13 @@ func (c *Commands) RemoveInstanceDomain(ctx context.Context, instanceDomain stri
 	}
 	return &domain.ObjectDetails{
 		Sequence:      events[len(events)-1].Sequence(),
-		EventDate:     events[len(events)-1].CreationDate(),
+		EventDate:     events[len(events)-1].CreatedAt(),
 		ResourceOwner: events[len(events)-1].Aggregate().InstanceID,
 	}, nil
 }
 
 func (c *Commands) addGeneratedInstanceDomain(ctx context.Context, a *instance.Aggregate, instanceName string) ([]preparation.Validation, error) {
-	domain, err := domain.NewGeneratedInstanceDomain(instanceName, authz.GetInstance(ctx).RequestedDomain())
+	domain, err := c.GenerateDomain(instanceName, http.DomainContext(ctx).RequestedDomain())
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +88,10 @@ func (c *Commands) addGeneratedInstanceDomain(ctx context.Context, a *instance.A
 func (c *Commands) addInstanceDomain(a *instance.Aggregate, instanceDomain string, generated bool) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if instanceDomain = strings.TrimSpace(instanceDomain); instanceDomain == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "INST-28nlD", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-28nlD", "Errors.Invalid.Argument")
 		}
 		if !allowDomainRunes.MatchString(instanceDomain) {
-			return nil, errors.ThrowInvalidArgument(nil, "INST-S3v3w", "Errors.Instance.Domain.InvalidCharacter")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-S3v3w", "Errors.Instance.Domain.InvalidCharacter")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			domainWriteModel, err := getInstanceDomainWriteModel(ctx, filter, instanceDomain)
@@ -98,7 +99,7 @@ func (c *Commands) addInstanceDomain(a *instance.Aggregate, instanceDomain strin
 				return nil, err
 			}
 			if domainWriteModel.State == domain.InstanceDomainStateActive {
-				return nil, errors.ThrowAlreadyExists(nil, "INST-i2nl", "Errors.Instance.Domain.AlreadyExists")
+				return nil, zerrors.ThrowAlreadyExists(nil, "INST-i2nl", "Errors.Instance.Domain.AlreadyExists")
 			}
 			events := []eventstore.Command{
 				instance.NewDomainAddedEvent(ctx, &a.Aggregate, instanceDomain, generated),
@@ -118,7 +119,7 @@ func (c *Commands) addInstanceDomain(a *instance.Aggregate, instanceDomain strin
 func (c *Commands) prepareUpdateConsoleRedirectURIs(instanceDomain string) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if instanceDomain = strings.TrimSpace(instanceDomain); instanceDomain == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "INST-E3j3s", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-E3j3s", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			consoleChangeEvent, err := c.updateConsoleRedirectURIs(ctx, filter, instanceDomain)
@@ -143,12 +144,12 @@ func (c *Commands) updateConsoleRedirectURIs(ctx context.Context, filter prepara
 	if !appWriteModel.State.Exists() {
 		return nil, nil
 	}
-	redirectURI := http.BuildHTTP(instanceDomain, c.externalPort, c.externalSecure) + consoleRedirectPath
+	redirectURI := http.BuildHTTP(instanceDomain, c.externalPort, c.externalSecure) + path.RedirectPath
 	changes := make([]project.OIDCConfigChanges, 0, 2)
 	if !containsURI(appWriteModel.RedirectUris, redirectURI) {
 		changes = append(changes, project.ChangeRedirectURIs(append(appWriteModel.RedirectUris, redirectURI)))
 	}
-	postLogoutRedirectURI := http.BuildHTTP(instanceDomain, c.externalPort, c.externalSecure) + consolePostLogoutPath
+	postLogoutRedirectURI := http.BuildHTTP(instanceDomain, c.externalPort, c.externalSecure) + path.PostLogoutPath
 	if !containsURI(appWriteModel.PostLogoutRedirectUris, postLogoutRedirectURI) {
 		changes = append(changes, project.ChangePostLogoutRedirectURIs(append(appWriteModel.PostLogoutRedirectUris, postLogoutRedirectURI)))
 	}
@@ -166,7 +167,7 @@ func (c *Commands) updateConsoleRedirectURIs(ctx context.Context, filter prepara
 func setPrimaryInstanceDomain(a *instance.Aggregate, instanceDomain string) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if instanceDomain = strings.TrimSpace(instanceDomain); instanceDomain == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "INST-9mWjf", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-9mWjf", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			domainWriteModel, err := getInstanceDomainWriteModel(ctx, filter, instanceDomain)
@@ -174,7 +175,7 @@ func setPrimaryInstanceDomain(a *instance.Aggregate, instanceDomain string) prep
 				return nil, err
 			}
 			if !domainWriteModel.State.Exists() {
-				return nil, errors.ThrowNotFound(nil, "INSTANCE-9nkWf", "Errors.Instance.Domain.NotFound")
+				return nil, zerrors.ThrowNotFound(nil, "INSTANCE-9nkWf", "Errors.Instance.Domain.NotFound")
 			}
 			return []eventstore.Command{instance.NewDomainPrimarySetEvent(ctx, &a.Aggregate, instanceDomain)}, nil
 		}, nil
@@ -184,7 +185,7 @@ func setPrimaryInstanceDomain(a *instance.Aggregate, instanceDomain string) prep
 func removeInstanceDomain(a *instance.Aggregate, instanceDomain string) preparation.Validation {
 	return func() (preparation.CreateCommands, error) {
 		if instanceDomain = strings.TrimSpace(instanceDomain); instanceDomain == "" {
-			return nil, errors.ThrowInvalidArgument(nil, "INST-39nls", "Errors.Invalid.Argument")
+			return nil, zerrors.ThrowInvalidArgument(nil, "INST-39nls", "Errors.Invalid.Argument")
 		}
 		return func(ctx context.Context, filter preparation.FilterToQueryReducer) ([]eventstore.Command, error) {
 			domainWriteModel, err := getInstanceDomainWriteModel(ctx, filter, instanceDomain)
@@ -192,10 +193,10 @@ func removeInstanceDomain(a *instance.Aggregate, instanceDomain string) preparat
 				return nil, err
 			}
 			if domainWriteModel.State != domain.InstanceDomainStateActive {
-				return nil, errors.ThrowNotFound(nil, "INSTANCE-8ls9f", "Errors.Instance.Domain.NotFound")
+				return nil, zerrors.ThrowNotFound(nil, "INSTANCE-8ls9f", "Errors.Instance.Domain.NotFound")
 			}
 			if domainWriteModel.Generated {
-				return nil, errors.ThrowPreconditionFailed(nil, "INSTANCE-9hn3n", "Errors.Instance.Domain.GeneratedNotRemovable")
+				return nil, zerrors.ThrowPreconditionFailed(nil, "INSTANCE-9hn3n", "Errors.Instance.Domain.GeneratedNotRemovable")
 			}
 			return []eventstore.Command{instance.NewDomainRemovedEvent(ctx, &a.Aggregate, instanceDomain)}, nil
 		}, nil

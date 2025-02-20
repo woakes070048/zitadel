@@ -3,63 +3,84 @@ package types
 import (
 	"context"
 	"html"
+	"strings"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/logging"
+
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/notification/channels/fs"
-	"github.com/zitadel/zitadel/internal/notification/channels/log"
-	"github.com/zitadel/zitadel/internal/notification/channels/smtp"
+	zchannels "github.com/zitadel/zitadel/internal/notification/channels"
 	"github.com/zitadel/zitadel/internal/notification/messages"
-	"github.com/zitadel/zitadel/internal/notification/senders"
+	"github.com/zitadel/zitadel/internal/notification/templates"
 	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func generateEmail(
 	ctx context.Context,
+	channels ChannelChains,
 	user *query.NotifyUser,
-	subject,
-	content string,
-	smtpConfig func(ctx context.Context) (*smtp.Config, error),
-	getFileSystemProvider func(ctx context.Context) (*fs.Config, error),
-	getLogProvider func(ctx context.Context) (*log.Config, error),
+	template string,
+	data templates.TemplateData,
+	args map[string]interface{},
 	lastEmail bool,
 	triggeringEvent eventstore.Event,
-	successMetricName,
-	failureMetricName string,
 ) error {
-	content = html.UnescapeString(content)
-	message := &messages.Email{
-		Recipients:      []string{user.VerifiedEmail},
-		Subject:         subject,
-		Content:         content,
-		TriggeringEvent: triggeringEvent,
+	emailChannels, config, err := channels.Email(ctx)
+	logging.OnError(err).Error("could not create email channel")
+	if emailChannels == nil || emailChannels.Len() == 0 {
+		return zchannels.NewCancelError(
+			zerrors.ThrowPreconditionFailed(nil, "MAIL-w8nfow", "Errors.Notification.Channels.NotPresent"),
+		)
 	}
+	recipient := user.VerifiedEmail
 	if lastEmail {
-		message.Recipients = []string{user.LastEmail}
+		recipient = user.LastEmail
 	}
+	if config.SMTPConfig != nil {
+		message := &messages.Email{
+			Recipients:      []string{recipient},
+			Subject:         data.Subject,
+			Content:         html.UnescapeString(template),
+			TriggeringEvent: triggeringEvent,
+		}
+		return emailChannels.HandleMessage(message)
+	}
+	if config.WebhookConfig != nil {
+		caseArgs := make(map[string]interface{}, len(args))
+		for k, v := range args {
+			caseArgs[strings.ToLower(string(k[0]))+k[1:]] = v
+		}
+		contextInfo := map[string]interface{}{
+			"recipientEmailAddress": recipient,
+			"eventType":             triggeringEvent.Type(),
+			"provider":              config.ProviderConfig,
+		}
 
-	channelChain, err := senders.EmailChannels(
-		ctx,
-		smtpConfig,
-		getFileSystemProvider,
-		getLogProvider,
-		successMetricName,
-		failureMetricName,
+		message := &messages.JSON{
+			Serializable: &serializableData{
+				ContextInfo:  contextInfo,
+				TemplateData: data,
+				Args:         caseArgs,
+			},
+			TriggeringEvent: triggeringEvent,
+		}
+		webhookChannels, err := channels.Webhook(ctx, *config.WebhookConfig)
+		if err != nil {
+			return err
+		}
+		return webhookChannels.HandleMessage(message)
+	}
+	return zchannels.NewCancelError(
+		zerrors.ThrowPreconditionFailed(nil, "MAIL-83nof", "Errors.Notification.Channels.NotPresent"),
 	)
-	if err != nil {
-		return err
-	}
-
-	if channelChain.Len() == 0 {
-		return errors.ThrowPreconditionFailed(nil, "MAIL-83nof", "Errors.Notification.Channels.NotPresent")
-	}
-	return channelChain.HandleMessage(message)
 }
 
 func mapNotifyUserToArgs(user *query.NotifyUser, args map[string]interface{}) map[string]interface{} {
 	if args == nil {
 		args = make(map[string]interface{})
 	}
+	args["UserID"] = user.ID
+	args["OrgID"] = user.ResourceOwner
 	args["UserName"] = user.Username
 	args["FirstName"] = user.FirstName
 	args["LastName"] = user.LastName
@@ -70,6 +91,7 @@ func mapNotifyUserToArgs(user *query.NotifyUser, args map[string]interface{}) ma
 	args["LastPhone"] = user.LastPhone
 	args["VerifiedPhone"] = user.VerifiedPhone
 	args["PreferredLoginName"] = user.PreferredLoginName
+	args["LoginName"] = user.PreferredLoginName // some endpoint promoted LoginName instead of PreferredLoginName
 	args["LoginNames"] = user.LoginNames
 	args["ChangeDate"] = user.ChangeDate
 	args["CreationDate"] = user.CreationDate

@@ -2,17 +2,17 @@ package renderer
 
 import (
 	"context"
+	"html/template"
 	"io/ioutil"
 	"net/http"
 	"os"
-	"text/template"
 
 	"github.com/zitadel/logging"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/i18n"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -23,17 +23,13 @@ const (
 
 type Renderer struct {
 	Templates  map[string]*template.Template
-	dir        http.FileSystem
 	cookieName string
 }
 
-func NewRenderer(dir http.FileSystem, tmplMapping map[string]string, funcs map[string]interface{}, cookieName string) (*Renderer, error) {
+func NewRenderer(tmplMapping map[string]string, funcs map[string]interface{}, cookieName string) (*Renderer, error) {
 	var err error
-	r := &Renderer{
-		dir:        dir,
-		cookieName: cookieName,
-	}
-	err = r.loadTemplates(dir, nil, tmplMapping, funcs)
+	r := &Renderer{cookieName: cookieName}
+	err = r.loadTemplates(i18n.LoadFilesystem(i18n.LOGIN), nil, tmplMapping, funcs)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +43,8 @@ func (r *Renderer) RenderTemplate(w http.ResponseWriter, req *http.Request, tran
 	}
 }
 
-func (r *Renderer) NewTranslator(ctx context.Context) (*i18n.Translator, error) {
-	return i18n.NewTranslator(r.dir, authz.GetInstance(ctx).DefaultLanguage(), r.cookieName)
+func (r *Renderer) NewTranslator(ctx context.Context, allowedLanguages []language.Tag) (*i18n.Translator, error) {
+	return i18n.NewLoginTranslator(authz.GetInstance(ctx).DefaultLanguage(), allowedLanguages, r.cookieName)
 }
 
 func (r *Renderer) Localize(translator *i18n.Translator, id string, args map[string]interface{}) string {
@@ -85,17 +81,17 @@ func (r *Renderer) loadTemplates(dir http.FileSystem, translator *i18n.Translato
 	}
 	templatesDir, err := dir.Open(templatesPath)
 	if err != nil {
-		return errors.ThrowNotFound(err, "RENDE-G3aea", "path not found")
+		return zerrors.ThrowNotFound(err, "RENDE-G3aea", "path not found")
 	}
 	defer templatesDir.Close()
 	files, err := templatesDir.Readdir(0)
 	if err != nil {
-		return errors.ThrowNotFound(err, "RENDE-dfR33", "cannot read dir")
+		return zerrors.ThrowNotFound(err, "RENDE-dfR33", "cannot read dir")
 	}
 	tmpl := template.New("")
 	for _, file := range files {
 		if err := r.addFileToTemplate(dir, tmpl, tmplMapping, funcs, file); err != nil {
-			return errors.ThrowNotFound(err, "RENDE-dfTe1", "cannot append file to templates")
+			return zerrors.ThrowNotFound(err, "RENDE-dfTe1", "cannot append file to templates")
 		}
 	}
 	r.Templates = make(map[string]*template.Template, len(tmplMapping))
@@ -116,10 +112,8 @@ func (r *Renderer) addFileToTemplate(dir http.FileSystem, tmpl *template.Templat
 		return err
 	}
 	tmpl, err = tmpl.New(file.Name()).Funcs(funcs).Parse(string(content))
-	if err != nil {
-		return err
-	}
-	return nil
+
+	return err
 }
 
 func (r *Renderer) registerTranslateFn(req *http.Request, translator *i18n.Translator, funcs map[string]interface{}) map[string]interface{} {
@@ -129,7 +123,7 @@ func (r *Renderer) registerTranslateFn(req *http.Request, translator *i18n.Trans
 	if translator == nil {
 		return funcs
 	}
-	funcs[TranslateFn] = func(id string, args ...interface{}) string {
+	funcs[TranslateFn] = func(id string, args ...interface{}) template.HTML {
 		m := map[string]interface{}{}
 		var key string
 		for i, arg := range args {
@@ -140,9 +134,9 @@ func (r *Renderer) registerTranslateFn(req *http.Request, translator *i18n.Trans
 			m[key] = arg
 		}
 		if r == nil {
-			return r.Localize(translator, id, m)
+			return template.HTML(r.Localize(translator, id, m))
 		}
-		return r.LocalizeFromRequest(translator, req, id, m)
+		return template.HTML(r.LocalizeFromRequest(translator, req, id, m))
 	}
 	return funcs
 }

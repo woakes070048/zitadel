@@ -7,14 +7,13 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/id"
 	id_mock "github.com/zitadel/zitadel/internal/id/mock"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_AddMachine(t *testing.T) {
@@ -54,7 +53,7 @@ func TestCommandSide_AddMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -75,7 +74,7 @@ func TestCommandSide_AddMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -100,7 +99,7 @@ func TestCommandSide_AddMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -120,19 +119,14 @@ func TestCommandSide_AddMachine(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewMachineAddedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									"name",
-									"description",
-									true,
-									domain.OIDCTokenTypeBearer,
-								),
-							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewAddUsernameUniqueConstraint("username", "org1", true)),
+						user.NewMachineAddedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							"name",
+							"description",
+							true,
+							domain.OIDCTokenTypeBearer,
+						),
 					),
 				),
 				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "user1"),
@@ -141,6 +135,52 @@ func TestCommandSide_AddMachine(t *testing.T) {
 				ctx: context.Background(),
 				machine: &Machine{
 					ObjectRoot: models.ObjectRoot{
+						ResourceOwner: "org1",
+					},
+					Description: "description",
+					Name:        "name",
+					Username:    "username",
+				},
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "add machine - custom id, ok",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&user.NewAggregate("optionalID1", "org1").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectPush(
+						user.NewMachineAddedEvent(context.Background(),
+							&user.NewAggregate("optionalID1", "org1").Aggregate,
+							"username",
+							"name",
+							"description",
+							true,
+							domain.OIDCTokenTypeBearer,
+						),
+					),
+				),
+			},
+			args: args{
+				ctx: context.Background(),
+				machine: &Machine{
+					ObjectRoot: models.ObjectRoot{
+						AggregateID:   "optionalID1",
 						ResourceOwner: "org1",
 					},
 					Description: "description",
@@ -169,7 +209,7 @@ func TestCommandSide_AddMachine(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -210,7 +250,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -230,7 +270,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -253,7 +293,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -288,7 +328,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 				},
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -309,11 +349,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								newMachineChangedEvent(context.Background(), "user1", "org1", "name1", "description1"),
-							),
-						},
+						newMachineChangedEvent(context.Background(), "user1", "org1", "name1", "description1"),
 					),
 				),
 			},
@@ -348,7 +384,7 @@ func TestCommandSide_ChangeMachine(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}

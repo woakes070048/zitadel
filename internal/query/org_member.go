@@ -9,9 +9,9 @@ import (
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -44,20 +44,16 @@ var (
 		name:  projection.MemberResourceOwner,
 		table: orgMemberTable,
 	}
+	OrgMemberUserResourceOwner = Column{
+		name:  projection.MemberUserResourceOwner,
+		table: orgMemberTable,
+	}
 	OrgMemberInstanceID = Column{
 		name:  projection.MemberInstanceID,
 		table: orgMemberTable,
 	}
 	OrgMemberOrgID = Column{
 		name:  projection.OrgMemberOrgIDCol,
-		table: orgMemberTable,
-	}
-	OrgMemberOwnerRemoved = Column{
-		name:  projection.MemberOwnerRemoved,
-		table: orgMemberTable,
-	}
-	OrgMemberOwnerRemovedUser = Column{
-		name:  projection.MemberUserOwnerRemoved,
 		table: orgMemberTable,
 	}
 )
@@ -73,27 +69,18 @@ func (q *OrgMembersQuery) toQuery(query sq.SelectBuilder) sq.SelectBuilder {
 		Where(sq.Eq{OrgMemberOrgID.identifier(): q.OrgID})
 }
 
-func addOrgMemberWithoutOwnerRemoved(eq map[string]interface{}) {
-	eq[OrgMemberOwnerRemoved.identifier()] = false
-	eq[OrgMemberOwnerRemovedUser.identifier()] = false
-}
-
-func (q *Queries) OrgMembers(ctx context.Context, queries *OrgMembersQuery, withOwnerRemoved bool) (members *Members, err error) {
+func (q *Queries) OrgMembers(ctx context.Context, queries *OrgMembersQuery) (members *Members, err error) {
 	ctx, span := tracing.NewSpan(ctx)
 	defer func() { span.EndWithError(err) }()
 
 	query, scan := prepareOrgMembersQuery(ctx, q.client)
 	eq := sq.Eq{OrgMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
-	if !withOwnerRemoved {
-		addOrgMemberWithoutOwnerRemoved(eq)
-		addLoginNameWithoutOwnerRemoved(eq)
-	}
 	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-PDAVB", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-PDAVB", "Errors.Query.InvalidRequest")
 	}
 
-	currentSequence, err := q.latestSequence(ctx, orgsTable)
+	currentSequence, err := q.latestState(ctx, orgsTable)
 	if err != nil {
 		return nil, err
 	}
@@ -103,10 +90,10 @@ func (q *Queries) OrgMembers(ctx context.Context, queries *OrgMembersQuery, with
 		return err
 	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-5g4yV", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-5g4yV", "Errors.Internal")
 	}
 
-	members.LatestSequence = currentSequence
+	members.State = currentSequence
 	return members, err
 }
 
@@ -116,6 +103,7 @@ func prepareOrgMembersQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 			OrgMemberChangeDate.identifier(),
 			OrgMemberSequence.identifier(),
 			OrgMemberResourceOwner.identifier(),
+			OrgMemberUserResourceOwner.identifier(),
 			OrgMemberUserID.identifier(),
 			OrgMemberRoles.identifier(),
 			LoginNameNameCol.identifier(),
@@ -158,6 +146,7 @@ func prepareOrgMembersQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 					&member.ChangeDate,
 					&member.Sequence,
 					&member.ResourceOwner,
+					&member.UserResourceOwner,
 					&member.UserID,
 					&member.Roles,
 					&preferredLoginName,
@@ -192,7 +181,7 @@ func prepareOrgMembersQuery(ctx context.Context, db prepareDatabase) (sq.SelectB
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-N34NV", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-N34NV", "Errors.Query.CloseRows")
 			}
 
 			return &Members{

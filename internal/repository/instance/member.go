@@ -4,20 +4,26 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/eventstore"
-
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/repository/member"
 )
 
-var (
+const (
 	MemberAddedEventType          = instanceEventTypePrefix + member.AddedEventType
 	MemberChangedEventType        = instanceEventTypePrefix + member.ChangedEventType
 	MemberRemovedEventType        = instanceEventTypePrefix + member.RemovedEventType
 	MemberCascadeRemovedEventType = instanceEventTypePrefix + member.CascadeRemovedEventType
 )
 
+const (
+	fieldPrefix = "instance"
+)
+
 type MemberAddedEvent struct {
 	member.MemberAddedEvent
+}
+
+func (e *MemberAddedEvent) Fields() []*eventstore.FieldOperation {
+	return e.FieldOperations(fieldPrefix)
 }
 
 func NewMemberAddedEvent(
@@ -40,7 +46,7 @@ func NewMemberAddedEvent(
 	}
 }
 
-func MemberAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func MemberAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := member.MemberAddedEventMapper(event)
 	if err != nil {
 		return nil, err
@@ -51,6 +57,10 @@ func MemberAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
 
 type MemberChangedEvent struct {
 	member.MemberChangedEvent
+}
+
+func (e *MemberChangedEvent) Fields() []*eventstore.FieldOperation {
+	return e.FieldOperations(fieldPrefix)
 }
 
 func NewMemberChangedEvent(
@@ -72,7 +82,7 @@ func NewMemberChangedEvent(
 	}
 }
 
-func MemberChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func MemberChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := member.ChangedEventMapper(event)
 	if err != nil {
 		return nil, err
@@ -83,6 +93,10 @@ func MemberChangedEventMapper(event *repository.Event) (eventstore.Event, error)
 
 type MemberRemovedEvent struct {
 	member.MemberRemovedEvent
+}
+
+func (e *MemberRemovedEvent) Fields() []*eventstore.FieldOperation {
+	return e.FieldOperations(fieldPrefix)
 }
 
 func NewMemberRemovedEvent(
@@ -102,7 +116,7 @@ func NewMemberRemovedEvent(
 	}
 }
 
-func MemberRemovedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func MemberRemovedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := member.RemovedEventMapper(event)
 	if err != nil {
 		return nil, err
@@ -113,6 +127,10 @@ func MemberRemovedEventMapper(event *repository.Event) (eventstore.Event, error)
 
 type MemberCascadeRemovedEvent struct {
 	member.MemberCascadeRemovedEvent
+}
+
+func (e *MemberCascadeRemovedEvent) Fields() []*eventstore.FieldOperation {
+	return e.FieldOperations(fieldPrefix)
 }
 
 func NewMemberCascadeRemovedEvent(
@@ -132,7 +150,7 @@ func NewMemberCascadeRemovedEvent(
 	}
 }
 
-func MemberCascadeRemovedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func MemberCascadeRemovedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	e, err := member.CascadeRemovedEventMapper(event)
 	if err != nil {
 		return nil, err

@@ -3,102 +3,112 @@ package projection
 import (
 	"context"
 
+	internal_authz "github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/database"
-	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
+	"github.com/zitadel/zitadel/internal/migration"
 )
 
 const (
-	CurrentSeqTable   = "projections.current_sequences"
+	CurrentStateTable = "projections.current_states"
 	LocksTable        = "projections.locks"
-	FailedEventsTable = "projections.failed_events"
+	FailedEventsTable = "projections.failed_events2"
 )
 
 var (
-	projectionConfig                    crdb.StatementHandlerConfig
-	OrgProjection                       *orgProjection
-	OrgMetadataProjection               *orgMetadataProjection
-	ActionProjection                    *actionProjection
-	FlowProjection                      *flowProjection
-	ProjectProjection                   *projectProjection
-	PasswordComplexityProjection        *passwordComplexityProjection
-	PasswordAgeProjection               *passwordAgeProjection
-	LockoutPolicyProjection             *lockoutPolicyProjection
-	PrivacyPolicyProjection             *privacyPolicyProjection
-	DomainPolicyProjection              *domainPolicyProjection
-	LabelPolicyProjection               *labelPolicyProjection
-	ProjectGrantProjection              *projectGrantProjection
-	ProjectRoleProjection               *projectRoleProjection
-	OrgDomainProjection                 *orgDomainProjection
-	LoginPolicyProjection               *loginPolicyProjection
-	IDPProjection                       *idpProjection
-	AppProjection                       *appProjection
-	IDPUserLinkProjection               *idpUserLinkProjection
-	IDPLoginPolicyLinkProjection        *idpLoginPolicyLinkProjection
-	IDPTemplateProjection               *idpTemplateProjection
-	MailTemplateProjection              *mailTemplateProjection
-	MessageTextProjection               *messageTextProjection
-	CustomTextProjection                *customTextProjection
-	UserProjection                      *userProjection
-	LoginNameProjection                 *loginNameProjection
-	OrgMemberProjection                 *orgMemberProjection
-	InstanceDomainProjection            *instanceDomainProjection
-	InstanceMemberProjection            *instanceMemberProjection
-	ProjectMemberProjection             *projectMemberProjection
-	ProjectGrantMemberProjection        *projectGrantMemberProjection
-	AuthNKeyProjection                  *authNKeyProjection
-	PersonalAccessTokenProjection       *personalAccessTokenProjection
-	UserGrantProjection                 *userGrantProjection
-	UserMetadataProjection              *userMetadataProjection
-	UserAuthMethodProjection            *userAuthMethodProjection
-	InstanceProjection                  *instanceProjection
-	SecretGeneratorProjection           *secretGeneratorProjection
-	SMTPConfigProjection                *smtpConfigProjection
-	SMSConfigProjection                 *smsConfigProjection
-	OIDCSettingsProjection              *oidcSettingsProjection
-	DebugNotificationProviderProjection *debugNotificationProviderProjection
-	KeyProjection                       *keyProjection
-	SecurityPolicyProjection            *securityPolicyProjection
-	NotificationPolicyProjection        *notificationPolicyProjection
+	projectionConfig                    handler.Config
+	OrgProjection                       *handler.Handler
+	OrgMetadataProjection               *handler.Handler
+	ActionProjection                    *handler.Handler
+	FlowProjection                      *handler.Handler
+	ProjectProjection                   *handler.Handler
+	PasswordComplexityProjection        *handler.Handler
+	PasswordAgeProjection               *handler.Handler
+	LockoutPolicyProjection             *handler.Handler
+	PrivacyPolicyProjection             *handler.Handler
+	DomainPolicyProjection              *handler.Handler
+	LabelPolicyProjection               *handler.Handler
+	ProjectGrantProjection              *handler.Handler
+	ProjectRoleProjection               *handler.Handler
+	OrgDomainProjection                 *handler.Handler
+	LoginPolicyProjection               *handler.Handler
+	IDPProjection                       *handler.Handler
+	AppProjection                       *handler.Handler
+	IDPUserLinkProjection               *handler.Handler
+	IDPLoginPolicyLinkProjection        *handler.Handler
+	IDPTemplateProjection               *handler.Handler
+	MailTemplateProjection              *handler.Handler
+	MessageTextProjection               *handler.Handler
+	CustomTextProjection                *handler.Handler
+	UserProjection                      *handler.Handler
+	LoginNameProjection                 *handler.Handler
+	OrgMemberProjection                 *handler.Handler
+	InstanceDomainProjection            *handler.Handler
+	InstanceTrustedDomainProjection     *handler.Handler
+	InstanceMemberProjection            *handler.Handler
+	ProjectMemberProjection             *handler.Handler
+	ProjectGrantMemberProjection        *handler.Handler
+	AuthNKeyProjection                  *handler.Handler
+	PersonalAccessTokenProjection       *handler.Handler
+	UserGrantProjection                 *handler.Handler
+	UserMetadataProjection              *handler.Handler
+	UserAuthMethodProjection            *handler.Handler
+	InstanceProjection                  *handler.Handler
+	SecretGeneratorProjection           *handler.Handler
+	SMTPConfigProjection                *handler.Handler
+	SMSConfigProjection                 *handler.Handler
+	OIDCSettingsProjection              *handler.Handler
+	DebugNotificationProviderProjection *handler.Handler
+	KeyProjection                       *handler.Handler
+	SecurityPolicyProjection            *handler.Handler
+	NotificationPolicyProjection        *handler.Handler
 	NotificationsProjection             interface{}
 	NotificationsQuotaProjection        interface{}
 	TelemetryPusherProjection           interface{}
-	DeviceAuthProjection                *deviceAuthProjection
-	SessionProjection                   *sessionProjection
-	AuthRequestProjection               *authRequestProjection
-	MilestoneProjection                 *milestoneProjection
+	DeviceAuthProjection                *handler.Handler
+	SessionProjection                   *handler.Handler
+	AuthRequestProjection               *handler.Handler
+	SamlRequestProjection               *handler.Handler
+	MilestoneProjection                 *handler.Handler
 	QuotaProjection                     *quotaProjection
+	LimitsProjection                    *handler.Handler
+	RestrictionsProjection              *handler.Handler
+	SystemFeatureProjection             *handler.Handler
+	InstanceFeatureProjection           *handler.Handler
+	TargetProjection                    *handler.Handler
+	ExecutionProjection                 *handler.Handler
+	UserSchemaProjection                *handler.Handler
+	WebKeyProjection                    *handler.Handler
+	DebugEventsProjection               *handler.Handler
+
+	ProjectGrantFields      *handler.FieldHandler
+	OrgDomainVerifiedFields *handler.FieldHandler
+	InstanceDomainFields    *handler.FieldHandler
+	MembershipFields        *handler.FieldHandler
 )
 
 type projection interface {
-	Start()
+	Start(ctx context.Context)
 	Init(ctx context.Context) error
+	Trigger(ctx context.Context, opts ...handler.TriggerOpt) (_ context.Context, err error)
+	migration.Migration
 }
 
 var (
 	projections []projection
 )
 
-func Create(ctx context.Context, sqlClient *database.DB, es *eventstore.Eventstore, config Config, keyEncryptionAlgorithm crypto.EncryptionAlgorithm, certEncryptionAlgorithm crypto.EncryptionAlgorithm) error {
-	projectionConfig = crdb.StatementHandlerConfig{
-		ProjectionHandlerConfig: handler.ProjectionHandlerConfig{
-			HandlerConfig: handler.HandlerConfig{
-				Eventstore: es,
-			},
-			RequeueEvery:          config.RequeueEvery,
-			RetryFailedAfter:      config.RetryFailedAfter,
-			Retries:               config.MaxFailureCount,
-			ConcurrentInstances:   config.ConcurrentInstances,
-			HandleActiveInstances: config.HandleActiveInstances,
-		},
-		Client:            sqlClient,
-		SequenceTable:     CurrentSeqTable,
-		LockTable:         LocksTable,
-		FailedEventsTable: FailedEventsTable,
-		MaxFailureCount:   config.MaxFailureCount,
-		BulkLimit:         config.BulkLimit,
+func Create(ctx context.Context, sqlClient *database.DB, es handler.EventStore, config Config, keyEncryptionAlgorithm crypto.EncryptionAlgorithm, certEncryptionAlgorithm crypto.EncryptionAlgorithm, systemUsers map[string]*internal_authz.SystemAPIUser) error {
+	projectionConfig = handler.Config{
+		Client:              sqlClient,
+		Eventstore:          es,
+		BulkLimit:           uint16(config.BulkLimit),
+		RequeueEvery:        config.RequeueEvery,
+		MaxFailureCount:     config.MaxFailureCount,
+		RetryFailedAfter:    config.RetryFailedAfter,
+		TransactionDuration: config.TransactionDuration,
+		ActiveInstancer:     config.ActiveInstancer,
 	}
 
 	OrgProjection = newOrgProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["orgs"]))
@@ -128,6 +138,7 @@ func Create(ctx context.Context, sqlClient *database.DB, es *eventstore.Eventsto
 	LoginNameProjection = newLoginNameProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["login_names"]))
 	OrgMemberProjection = newOrgMemberProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["org_members"]))
 	InstanceDomainProjection = newInstanceDomainProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["instance_domains"]))
+	InstanceTrustedDomainProjection = newInstanceTrustedDomainProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["instance_trusted_domains"]))
 	InstanceMemberProjection = newInstanceMemberProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["iam_members"]))
 	ProjectMemberProjection = newProjectMemberProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["project_members"]))
 	ProjectGrantMemberProjection = newProjectGrantMemberProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["project_grant_members"]))
@@ -148,10 +159,30 @@ func Create(ctx context.Context, sqlClient *database.DB, es *eventstore.Eventsto
 	DeviceAuthProjection = newDeviceAuthProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["device_auth"]))
 	SessionProjection = newSessionProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["sessions"]))
 	AuthRequestProjection = newAuthRequestProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["auth_requests"]))
+	SamlRequestProjection = newSamlRequestProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["saml_requests"]))
 	MilestoneProjection = newMilestoneProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["milestones"]))
 	QuotaProjection = newQuotaProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["quotas"]))
+	LimitsProjection = newLimitsProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["limits"]))
+	RestrictionsProjection = newRestrictionsProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["restrictions"]))
+	SystemFeatureProjection = newSystemFeatureProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["system_features"]))
+	InstanceFeatureProjection = newInstanceFeatureProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["instance_features"]))
+	TargetProjection = newTargetProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["targets"]))
+	ExecutionProjection = newExecutionProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["executions"]))
+	UserSchemaProjection = newUserSchemaProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["user_schemas"]))
+	WebKeyProjection = newWebKeyProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["web_keys"]))
+	DebugEventsProjection = newDebugEventsProjection(ctx, applyCustomConfig(projectionConfig, config.Customizations["debug_events"]))
+
+	ProjectGrantFields = newFillProjectGrantFields(applyCustomConfig(projectionConfig, config.Customizations[fieldsProjectGrant]))
+	OrgDomainVerifiedFields = newFillOrgDomainVerifiedFields(applyCustomConfig(projectionConfig, config.Customizations[fieldsOrgDomainVerified]))
+	InstanceDomainFields = newFillInstanceDomainFields(applyCustomConfig(projectionConfig, config.Customizations[fieldsInstanceDomain]))
+	MembershipFields = newFillMembershipFields(applyCustomConfig(projectionConfig, config.Customizations[fieldsMemberships]))
+
 	newProjectionsList()
 	return nil
+}
+
+func Projections() []projection {
+	return projections
 }
 
 func Init(ctx context.Context) error {
@@ -163,17 +194,27 @@ func Init(ctx context.Context) error {
 	return nil
 }
 
-func Start() {
+func Start(ctx context.Context) {
 	for _, projection := range projections {
-		projection.Start()
+		projection.Start(ctx)
 	}
 }
 
-func ApplyCustomConfig(customConfig CustomConfig) crdb.StatementHandlerConfig {
+func ProjectInstance(ctx context.Context) error {
+	for _, projection := range projections {
+		_, err := projection.Trigger(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ApplyCustomConfig(customConfig CustomConfig) handler.Config {
 	return applyCustomConfig(projectionConfig, customConfig)
 }
 
-func applyCustomConfig(config crdb.StatementHandlerConfig, customConfig CustomConfig) crdb.StatementHandlerConfig {
+func applyCustomConfig(config handler.Config, customConfig CustomConfig) handler.Config {
 	if customConfig.BulkLimit != nil {
 		config.BulkLimit = *customConfig.BulkLimit
 	}
@@ -186,8 +227,8 @@ func applyCustomConfig(config crdb.StatementHandlerConfig, customConfig CustomCo
 	if customConfig.RetryFailedAfter != nil {
 		config.RetryFailedAfter = *customConfig.RetryFailedAfter
 	}
-	if customConfig.HandleActiveInstances != nil {
-		config.HandleActiveInstances = *customConfig.HandleActiveInstances
+	if customConfig.TransactionDuration != nil {
+		config.TransactionDuration = *customConfig.TransactionDuration
 	}
 
 	return config
@@ -228,6 +269,7 @@ func newProjectionsList() {
 		LoginNameProjection,
 		OrgMemberProjection,
 		InstanceDomainProjection,
+		InstanceTrustedDomainProjection,
 		InstanceMemberProjection,
 		ProjectMemberProjection,
 		ProjectGrantMemberProjection,
@@ -248,7 +290,17 @@ func newProjectionsList() {
 		DeviceAuthProjection,
 		SessionProjection,
 		AuthRequestProjection,
+		SamlRequestProjection,
 		MilestoneProjection,
-		QuotaProjection,
+		QuotaProjection.handler,
+		LimitsProjection,
+		RestrictionsProjection,
+		SystemFeatureProjection,
+		InstanceFeatureProjection,
+		TargetProjection,
+		ExecutionProjection,
+		UserSchemaProjection,
+		WebKeyProjection,
+		DebugEventsProjection,
 	}
 }
