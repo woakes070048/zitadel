@@ -16,11 +16,13 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/integration/scim"
 	action "github.com/zitadel/zitadel/pkg/grpc/action/v2beta"
 	"github.com/zitadel/zitadel/pkg/grpc/admin"
+	app "github.com/zitadel/zitadel/pkg/grpc/app/v2beta"
 	"github.com/zitadel/zitadel/pkg/grpc/auth"
 	"github.com/zitadel/zitadel/pkg/grpc/feature/v2"
 	feature_v2beta "github.com/zitadel/zitadel/pkg/grpc/feature/v2beta"
@@ -74,6 +76,7 @@ type Client struct {
 	SCIM           *scim.Client
 	Projectv2Beta  project_v2beta.ProjectServiceClient
 	InstanceV2Beta instance.InstanceServiceClient
+	AppV2Beta      app.AppServiceClient
 }
 
 func NewDefaultClient(ctx context.Context) (*Client, error) {
@@ -113,6 +116,7 @@ func newClient(ctx context.Context, target string) (*Client, error) {
 		SCIM:           scim.NewScimClient(target),
 		Projectv2Beta:  project_v2beta.NewProjectServiceClient(cc),
 		InstanceV2Beta: instance.NewInstanceServiceClient(cc),
+		AppV2Beta:      app.NewAppServiceClient(cc),
 	}
 	return client, client.pollHealth(ctx)
 }
@@ -266,6 +270,15 @@ func (i *Instance) CreateUserTypeMachine(ctx context.Context) *user_v2.CreateUse
 	})
 	logging.OnError(err).Panic("create machine user")
 	i.TriggerUserByID(ctx, resp.GetId())
+	return resp
+}
+
+func (i *Instance) CreatePersonalAccessToken(ctx context.Context, userID string) *user_v2.AddPersonalAccessTokenResponse {
+	resp, err := i.Client.UserV2.AddPersonalAccessToken(ctx, &user_v2.AddPersonalAccessTokenRequest{
+		UserId:         userID,
+		ExpirationDate: timestamppb.New(time.Now().Add(30 * time.Minute)),
+	})
+	logging.OnError(err).Panic("create pat")
 	return resp
 }
 
@@ -899,6 +912,16 @@ func (i *Instance) CreateProjectMembership(t *testing.T, ctx context.Context, pr
 		ProjectId: projectID,
 		UserId:    userID,
 		Roles:     []string{domain.RoleProjectOwner},
+	})
+	require.NoError(t, err)
+}
+
+func (i *Instance) CreateProjectGrantMembership(t *testing.T, ctx context.Context, projectID, grantID, userID string) {
+	_, err := i.Client.Mgmt.AddProjectGrantMember(ctx, &mgmt.AddProjectGrantMemberRequest{
+		ProjectId: projectID,
+		GrantId:   grantID,
+		UserId:    userID,
+		Roles:     []string{domain.RoleProjectGrantOwner},
 	})
 	require.NoError(t, err)
 }
